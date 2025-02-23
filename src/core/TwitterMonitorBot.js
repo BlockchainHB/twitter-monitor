@@ -6,6 +6,7 @@ const config = require('../config/config');
 const path = require('path');
 const fs = require('fs/promises');
 const RateLimitManager = require('./RateLimitManager');
+const DexScreenerService = require('./DexScreenerService');
 
 class TwitterMonitorBot {
     constructor() {
@@ -34,6 +35,9 @@ class TwitterMonitorBot {
 
         // Command processing flags
         this.processingCommands = new Set();
+
+        // Initialize DexScreener service
+        this.dexscreener = new DexScreenerService();
     }
 
     async setupBot() {
@@ -110,6 +114,11 @@ class TwitterMonitorBot {
                                 await this.testNotifications(interaction);
                             }
                             break;
+                        case 'vipmonitor':
+                            if (!interaction.replied) {
+                                await this.handleVipMonitorCommand(interaction);
+                            }
+                            break;
                         default:
                             if (!interaction.replied) {
                                 await interaction.reply('Unknown command');
@@ -182,6 +191,7 @@ class TwitterMonitorBot {
                     last_tweet_id TEXT,
                     last_check_time INTEGER DEFAULT 0,
                     profile_data TEXT,
+                    is_vip INTEGER DEFAULT 0,
                     UNIQUE(username, monitoring_type)
                 )
             `);
@@ -230,9 +240,21 @@ class TwitterMonitorBot {
                 const tweets = await this.rateLimitManager.scheduleRequest(
                     async () => {
                         const params = {
-                            'query': `(${query}) -is:retweet -is:reply`,
-                            'tweet.fields': ['author_id', 'created_at', 'text', 'attachments'],
-                            'expansions': ['attachments.media_keys', 'author_id'],
+                            'query': `(${query}) -is:retweet`,
+                            'tweet.fields': [
+                                'author_id',
+                                'created_at',
+                                'text',
+                                'attachments',
+                                'referenced_tweets',
+                                'in_reply_to_user_id'
+                            ],
+                            'expansions': [
+                                'attachments.media_keys',
+                                'author_id',
+                                'referenced_tweets.id',
+                                'referenced_tweets.id.author_id'
+                            ],
                             'media.fields': ['url', 'preview_image_url', 'type'],
                             'user.fields': ['profile_image_url', 'name', 'username'],
                             'max_results': 100,
@@ -329,7 +351,8 @@ class TwitterMonitorBot {
                                         await this.sendSolanaNotification({
                                             tweet_id: tweet.id,
                                             address,
-                                            author_id: tweet.author_id
+                                            author_id: tweet.author_id,
+                                            tweet_text: tweet.text
                                         });
                                     }
                                 }
@@ -377,12 +400,24 @@ class TwitterMonitorBot {
             const tweets = await this.rateLimitManager.scheduleRequest(
                 async () => {
                     const params = {
-                        'tweet.fields': ['author_id', 'created_at', 'text', 'attachments'],
-                        'expansions': ['attachments.media_keys', 'author_id'],
+                        'tweet.fields': [
+                            'author_id',
+                            'created_at',
+                            'text',
+                            'attachments',
+                            'referenced_tweets',
+                            'in_reply_to_user_id'
+                        ],
+                        'expansions': [
+                            'attachments.media_keys',
+                            'author_id',
+                            'referenced_tweets.id',
+                            'referenced_tweets.id.author_id'
+                        ],
                         'media.fields': ['url', 'preview_image_url', 'type'],
                         'user.fields': ['profile_image_url', 'name', 'username'],
                         'max_results': 100,
-                        'exclude': ['retweets', 'replies']
+                        'exclude': ['retweets']
                     };
                     
                     // Only add since_id if we have a valid last tweet ID
@@ -417,7 +452,8 @@ class TwitterMonitorBot {
                             await this.sendSolanaNotification({
                                 tweet_id: tweet.id,
                                 address,
-                                author_id: tweet.author_id
+                                author_id: tweet.author_id,
+                                tweet_text: tweet.text
                             });
                             console.log(`[DEBUG] Sent Solana notification for address ${address}`);
                         }
@@ -452,17 +488,19 @@ class TwitterMonitorBot {
 
     async sendTweetNotification(tweet) {
         try {
-            const channel = this.guild.channels.cache.get(this.channels.tweets);
-            if (!channel) {
-                console.error('Tweets channel not found in guild');
-                return;
-            }
-
             // Get author info from database
             const author = await this.dbGet(
-                'SELECT username, profile_data FROM monitored_accounts WHERE twitter_id = ?',
+                'SELECT username, profile_data, is_vip FROM monitored_accounts WHERE twitter_id = ?',
                 [tweet.author_id]
             );
+
+            // Determine which channel to use
+            const channelId = author?.is_vip ? this.channels.vip : this.channels.tweets;
+            const channel = this.guild.channels.cache.get(channelId);
+            if (!channel) {
+                console.error('Channel not found in guild');
+                return;
+            }
 
             const profileData = author?.profile_data ? JSON.parse(author.profile_data) : {};
 
@@ -478,28 +516,59 @@ class TwitterMonitorBot {
             // Create tweet URL
             const tweetUrl = `https://twitter.com/${author?.username}/status/${tweet.id}`;
 
-            await channel.send({
-                content: "",
-                tts: false,
-                embeds: [{
-                    color: 8388863,
-                    fields: [],
-                    footer: {
-                        text: "built by keklabs",
-                        icon_url: "https://media.discordapp.net/attachments/1337565019218378864/1342687517719269489/ddd006d6-fef8-46c4-83eb-5faa63887089.png?ex=67ba8ab2&is=67b93932&hm=d70c81c89b11e25e050324cb10b42b3a5747452d86cc8409ea707f250e02e815&=&format=webp&quality=lossless&width=468&height=468"
-                    },
-                    description: `${tweet.text}\n\n[View Tweet](${tweetUrl})`,
-                    author: {
-                        icon_url: profileData.profile_image_url || null,
-                        name: `${profileData.name || author?.username || 'Unknown'} (@${author?.username || 'unknown'})`,
-                        url: `https://twitter.com/${author?.username}`
-                    },
-                    timestamp: new Date(tweet.created_at).toISOString(),
-                    image: imageUrl ? {
-                        url: imageUrl
-                    } : null
-                }]
-            });
+            // Check if this is a reply and get parent tweet info
+            let embedTitle = `New Tweet from @${author?.username}`;
+            let description = tweet.text;
+
+            if (tweet.referenced_tweets?.some(ref => ref.type === 'replied_to')) {
+                const parentTweetRef = tweet.referenced_tweets.find(ref => ref.type === 'replied_to');
+                const parentTweet = tweet.includes?.tweets?.find(t => t.id === parentTweetRef.id);
+                const parentAuthor = tweet.includes?.users?.find(u => u.id === parentTweet?.author_id);
+
+                if (parentTweet && parentAuthor) {
+                    embedTitle = `@${author?.username} replied to @${parentAuthor.username}`;
+                    description = `${tweet.text}\n\n───────────────\n\n`;
+                    description += `**[@${parentAuthor.username}](https://twitter.com/${parentAuthor.username})**`;
+                    if (parentAuthor.name !== parentAuthor.username) {
+                        description += ` • ${parentAuthor.name}`;
+                    }
+                    description += `\n${parentTweet.text}`;
+                }
+            }
+
+            description += `\n\n[View Tweet](${tweetUrl})`;
+
+            // Create the main tweet embed
+            const tweetEmbed = {
+                color: 8388863,
+                title: embedTitle,
+                fields: [],
+                footer: {
+                    text: "built by keklabs",
+                    icon_url: "https://media.discordapp.net/attachments/1337565019218378864/1342687517719269489/ddd006d6-fef8-46c4-83eb-5faa63887089.png"
+                },
+                description: description,
+                author: {
+                    icon_url: profileData.profile_image_url || null,
+                    name: `${profileData.name || author?.username || 'Unknown'} (@${author?.username || 'unknown'})`,
+                    url: `https://twitter.com/${author?.username}`
+                },
+                timestamp: new Date(tweet.created_at).toISOString(),
+                image: imageUrl ? { url: imageUrl } : null
+            };
+
+            // Check for Solana addresses in the tweet
+            const addresses = this.extractSolanaAddresses(tweet.text);
+            if (addresses.length > 0) {
+                const tokenInfo = await this.dexscreener.getTokenInfo(addresses[0]);
+                if (tokenInfo) {
+                    const tokenEmbed = await this.createTokenEmbed(tokenInfo, 0xFF0000);
+                    await channel.send({ embeds: [tweetEmbed, tokenEmbed] });
+                    return;
+                }
+            }
+
+            await channel.send({ embeds: [tweetEmbed] });
         } catch (error) {
             console.error('Error sending tweet notification:', error);
         }
@@ -513,28 +582,83 @@ class TwitterMonitorBot {
                 return;
             }
 
-            await channel.send({
-                embeds: [{
-                    title: 'Solana Address Found',
-                    description: `Found address: \`${data.address}\``,
-                    color: 0x9945FF,
-                    fields: [
-                        {
-                            name: 'Tweet ID',
-                            value: data.tweet_id,
-                            inline: true
-                        },
-                        {
-                            name: 'Author ID',
-                            value: data.author_id,
-                            inline: true
-                        }
-                    ]
-                }]
-            });
+            // Get token information from DexScreener
+            const tokenInfo = await this.dexscreener.getTokenInfo(data.address);
+            if (!tokenInfo) {
+                return; // Skip if no token info found
+            }
+
+            // Get author info and tweet data for context
+            const author = await this.dbGet(
+                'SELECT username, profile_data FROM monitored_accounts WHERE twitter_id = ?',
+                [data.author_id]
+            );
+
+            const profileData = author?.profile_data ? JSON.parse(author.profile_data) : {};
+
+            // Create tweet URL
+            const tweetUrl = `https://twitter.com/${author?.username}/status/${data.tweet_id}`;
+
+            // Create the main tweet embed (matching tweet notification format exactly)
+            const tweetEmbed = {
+                color: 8388863,
+                fields: [],
+                footer: {
+                    text: "built by keklabs",
+                    icon_url: "https://media.discordapp.net/attachments/1337565019218378864/1342687517719269489/ddd006d6-fef8-46c4-83eb-5faa63887089.png?ex=67ba8ab2&is=67b93932&hm=d70c81c89b11e25e050324cb10b42b3a5747452d86cc8409ea707f250e02e815&=&format=webp&quality=lossless&width=468&height=468"
+                },
+                description: `${data.tweet_text}\n\n[View Tweet](${tweetUrl})`,
+                author: {
+                    icon_url: profileData.profile_image_url || null,
+                    name: `${profileData.name || author?.username || 'Unknown'} (@${author?.username || 'unknown'})`,
+                    url: `https://twitter.com/${author?.username}`
+                },
+                timestamp: new Date().toISOString()
+            };
+
+            // Create token embed with red color
+            const tokenEmbed = await this.createTokenEmbed(tokenInfo, 0xFF0000);
+
+            // Send both embeds
+            await channel.send({ embeds: [tweetEmbed, tokenEmbed] });
         } catch (error) {
             console.error('Error sending Solana notification:', error);
         }
+    }
+
+    async createTokenEmbed(tokenInfo, color = 0x9945FF) {
+        const description = [
+            `💰MC: $${this.formatNumber(tokenInfo.marketCap)}`,
+            `📊VOL: $${this.formatNumber(tokenInfo.volume24h)}`,
+            `💵PRICE: $${parseFloat(tokenInfo.priceUsd).toFixed(6)}`,
+            `💧LIQ: $${this.formatNumber(tokenInfo.liquidity)}`,
+            `\n[View on DexScreener](${tokenInfo.url})`
+        ].join('\n');
+
+        return {
+            title: `${tokenInfo.symbol} (${tokenInfo.name})`,
+            description: description,
+            fields: [],
+            author: {
+                name: "A Token Was Detected",
+                url: tokenInfo.url
+            },
+            color: color,
+            thumbnail: {
+                url: tokenInfo.logoUrl || "https://dexscreener.com/favicon.ico"  // Fallback to DexScreener icon if no logo
+            }
+        };
+    }
+
+    // Helper function to format large numbers
+    formatNumber(num) {
+        if (!num) return 'N/A';
+        
+        const value = parseFloat(num);
+        if (value >= 1e9) return `${(value / 1e9).toFixed(2)}B`;
+        if (value >= 1e6) return `${(value / 1e6).toFixed(2)}M`;
+        if (value >= 1e3) return `${(value / 1e3).toFixed(2)}K`;
+        return value.toFixed(2);
     }
 
     async handleMonitorCommand(interaction) {
@@ -755,8 +879,9 @@ class TwitterMonitorBot {
             );
 
             // Group accounts by monitoring type
-            const tweetAccounts = accountDetails.filter(a => a.monitoring_type === 'tweet');
+            const tweetAccounts = accountDetails.filter(a => a.monitoring_type === 'tweet' && !a.is_vip);
             const solanaAccounts = accountDetails.filter(a => a.monitoring_type === 'solana');
+            const vipAccounts = accountDetails.filter(a => a.is_vip);
 
             const embed = {
                 title: '📋 Monitored Accounts',
@@ -765,9 +890,19 @@ class TwitterMonitorBot {
                 color: 0x1DA1F2,
                 footer: {
                     text: `Total accounts: ${accounts.length} | built by keklabs`,
-                    icon_url: 'https://media.discordapp.net/attachments/1337565019218378864/1342687517719269489/ddd006d6-fef8-46c4-83eb-5faa63887089.png?ex=67ba8ab2&is=67b93932&hm=d70c81c89b11e25e050324cb10b42b3a5747452d86cc8409ea707f250e02e815&=&format=webp&quality=lossless&width=468&height=468'
+                    icon_url: 'https://media.discordapp.net/attachments/1337565019218378864/1342687517719269489/ddd006d6-fef8-46c4-83eb-5faa63887089.png'
                 }
             };
+
+            if (vipAccounts.length > 0) {
+                embed.fields.push({
+                    name: '⭐ VIP Accounts',
+                    value: vipAccounts.map(a => 
+                        `• [@${a.username}](https://twitter.com/${a.username})${a.name !== a.username ? ` - ${a.name}` : ''}`
+                    ).join('\n') || 'None',
+                    inline: false
+                });
+            }
 
             if (tweetAccounts.length > 0) {
                 embed.fields.push({
@@ -957,6 +1092,159 @@ class TwitterMonitorBot {
                     footer: {
                         text: 'built by keklabs',
                         icon_url: 'https://media.discordapp.net/attachments/1337565019218378864/1342687517719269489/ddd006d6-fef8-46c4-83eb-5faa63887089.png?ex=67ba8ab2&is=67b93932&hm=d70c81c89b11e25e050324cb10b42b3a5747452d86cc8409ea707f250e02e815&=&format=webp&quality=lossless&width=468&height=468'
+                    }
+                }]
+            });
+        }
+    }
+
+    async handleVipMonitorCommand(interaction) {
+        try {
+            console.log('[DEBUG] Starting VIP monitor command execution');
+            const username = interaction.options.getString('twitter_id').toLowerCase().replace('@', '');
+            
+            // Send immediate confirmation
+            await interaction.reply({
+                embeds: [{
+                    title: '⏳ Starting VIP Monitor Setup',
+                    description: `Setting up VIP monitoring for @${username}`,
+                    color: 0xFFA500,
+                    footer: {
+                        text: 'built by keklabs',
+                        icon_url: 'https://media.discordapp.net/attachments/1337565019218378864/1342687517719269489/ddd006d6-fef8-46c4-83eb-5faa63887089.png'
+                    }
+                }]
+            });
+
+            // Check if already monitoring
+            const existingAccount = await this.dbGet(
+                'SELECT * FROM monitored_accounts WHERE username = ? AND monitoring_type = ? AND is_vip = 1',
+                [username, 'tweet']
+            );
+
+            if (existingAccount) {
+                return await interaction.editReply({
+                    embeds: [{
+                        title: 'Already Monitoring',
+                        description: `Already monitoring @${username} as a VIP`,
+                        color: 0x9945FF,
+                        footer: {
+                            text: 'built by keklabs',
+                            icon_url: 'https://media.discordapp.net/attachments/1337565019218378864/1342687517719269489/ddd006d6-fef8-46c4-83eb-5faa63887089.png'
+                        }
+                    }]
+                });
+            }
+
+            // Validate Twitter account exists
+            try {
+                const userInfo = await this.rateLimitManager.scheduleRequest(
+                    async () => await this.twitter.v2.userByUsername(username, {
+                        'user.fields': ['id', 'username', 'name', 'profile_image_url', 'public_metrics', 'description']
+                    }),
+                    'users/by/username'
+                );
+
+                if (!userInfo.data) {
+                    return await interaction.editReply({
+                        embeds: [{
+                            title: '❌ Invalid Twitter Account',
+                            description: `Could not find Twitter account: @${username}`,
+                            color: 0xFF0000,
+                            footer: {
+                                text: 'built by keklabs',
+                                icon_url: 'https://media.discordapp.net/attachments/1337565019218378864/1342687517719269489/ddd006d6-fef8-46c4-83eb-5faa63887089.png'
+                            }
+                        }]
+                    });
+                }
+
+                // Add to monitoring list with VIP flag
+                await this.dbRun(
+                    'INSERT INTO monitored_accounts (username, twitter_id, monitoring_type, last_tweet_id, profile_data, is_vip) VALUES (?, ?, ?, ?, ?, ?)',
+                    [
+                        username,
+                        userInfo.data.id,
+                        'tweet',
+                        null,
+                        JSON.stringify({
+                            name: userInfo.data.name,
+                            profile_image_url: userInfo.data.profile_image_url
+                        }),
+                        1 // VIP flag
+                    ]
+                );
+
+                // Start monitoring if not already running
+                if (!this.monitoringInterval) {
+                    await this.startMonitoring();
+                }
+
+                // Send final success message
+                return await interaction.editReply({
+                    embeds: [{
+                        title: `✅ VIP Tweet Tracker Started For @${username}`,
+                        description: `Successfully monitoring @${username} as a VIP user`,
+                        fields: [
+                            {
+                                name: 'Account Name',
+                                value: userInfo.data.name,
+                                inline: true
+                            },
+                            {
+                                name: 'Monitoring Type',
+                                value: '📝 VIP Tweets',
+                                inline: true
+                            },
+                            {
+                                name: 'Notifications Channel',
+                                value: `<#${this.channels.vip}>`,
+                                inline: true
+                            }
+                        ],
+                        color: 0x00FF00,
+                        thumbnail: {
+                            url: userInfo.data.profile_image_url
+                        },
+                        footer: {
+                            text: 'built by keklabs',
+                            icon_url: 'https://media.discordapp.net/attachments/1337565019218378864/1342687517719269489/ddd006d6-fef8-46c4-83eb-5faa63887089.png'
+                        }
+                    }]
+                });
+
+            } catch (error) {
+                if (error.code === 429) {
+                    return await interaction.editReply({
+                        embeds: [{
+                            title: '❌ Rate Limit Reached',
+                            description: 'Twitter API rate limit reached. Please try again in a few minutes.',
+                            color: 0xFF0000,
+                            footer: {
+                                text: 'built by keklabs',
+                                icon_url: 'https://media.discordapp.net/attachments/1337565019218378864/1342687517719269489/ddd006d6-fef8-46c4-83eb-5faa63887089.png'
+                            }
+                        }]
+                    });
+                }
+
+                throw error;
+            }
+        } catch (error) {
+            console.error('[ERROR] VIP Monitor command error:', error);
+            
+            const errorMessage = error.code === 'TWITTER_API_ERROR' 
+                ? "Failed to fetch Twitter account information. Please try again later."
+                : "An error occurred while processing the command";
+
+            await interaction.editReply({
+                embeds: [{
+                    title: "Command Error",
+                    description: `❌ ${errorMessage}`,
+                    color: 0xFF0000,
+                    footer: {
+                        text: "built by keklabs",
+                        icon_url: "https://media.discordapp.net/attachments/1337565019218378864/1342687517719269489/ddd006d6-fef8-46c4-83eb-5faa63887089.png"
                     }
                 }]
             });

@@ -32,6 +32,18 @@ const commands = [
         ]
     },
     {
+        name: 'vipmonitor',
+        description: 'Start monitoring a VIP Twitter account',
+        options: [
+            {
+                name: 'twitter_id',
+                description: 'Twitter username to monitor (without @)',
+                type: 3, // STRING type
+                required: true
+            }
+        ]
+    },
+    {
         name: 'list',
         description: 'List all monitored Twitter accounts'
     },

@@ -26,8 +26,8 @@ A Discord bot that monitors Twitter accounts and sends real-time notifications f
 
 1. Clone the repository
 ```bash
-git clone https://github.com/yourusername/twitter-monitor-bot.git
-cd twitter-monitor-bot
+git clone https://github.com/blockchainhb/TwitterBotV2.git
+cd TwitterBotV2
 ```
 
 2. Install dependencies

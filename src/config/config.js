@@ -21,7 +21,8 @@ const config = {
         guildId: process.env.DISCORD_GUILD_ID || '',
         channels: {
             tweets: process.env.TWEETS_CHANNEL_ID || '',
-            solana: process.env.SOLANA_CHANNEL_ID || ''
+            solana: process.env.SOLANA_CHANNEL_ID || '',
+            vip: '1335773126708957186'  // VIP channel ID
         }
     },
     database: {

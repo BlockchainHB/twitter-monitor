@@ -72,7 +72,7 @@ class RateLimitManager extends EventEmitter {
                 this.emit('debug', `Request completed for ${endpoint}`);
                 emitter.emit(EVENTS.REQUEST_COMPLETED, { endpoint });
                 resolve(result);
-            } catch (error) {
+        } catch (error) {
                 this.emit('debug', `Request failed for ${endpoint}: ${error.message}`);
                 emitter.emit(EVENTS.REQUEST_FAILED, { error, endpoint });
                 if (error.code === 429) { // Rate limit error
