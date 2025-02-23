@@ -1,1 +1,1 @@
-worker: npm ci --omit=dev && npm start 
+worker: npm start 
