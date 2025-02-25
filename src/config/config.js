@@ -10,9 +10,36 @@ const config = {
         accessToken: process.env.TWITTER_ACCESS_TOKEN || '',
         accessTokenSecret: process.env.TWITTER_ACCESS_TOKEN_SECRET || '',
         rateLimit: {
-            requestsPerWindow: 500,
-            windowSizeMinutes: 15,
-            safetyMargin: 0.9
+            endpoints: {
+                'users/by/username': {
+                    requestsPerWindow: 900,
+                    windowSizeMinutes: 15
+                },
+                'users/:id/tweets': {
+                    requestsPerWindow: 1500,
+                    windowSizeMinutes: 15
+                },
+                'tweets/search/recent': {
+                    requestsPerWindow: 450,
+                    windowSizeMinutes: 15,
+                    maxBatchSize: 100,
+                    maxAccountsPerBatch: 25
+                },
+                'users': {
+                    requestsPerWindow: 900,
+                    windowSizeMinutes: 15
+                }
+            },
+            defaultLimit: {
+                requestsPerWindow: 180,
+                windowSizeMinutes: 15
+            },
+            safetyMargin: 0.9,
+            batchConfig: {
+                minIntervalMs: 5000,
+                maxRetries: 3,
+                retryDelayMs: 10000
+            }
         }
     },
     discord: {
@@ -20,9 +47,17 @@ const config = {
         clientId: process.env.DISCORD_CLIENT_ID || '',
         guildId: process.env.DISCORD_GUILD_ID || '',
         channels: {
-            tweets: process.env.TWEETS_CHANNEL_ID || '',
-            solana: process.env.SOLANA_CHANNEL_ID || '',
-            vip: '1335773126708957186'  // VIP channel ID
+            tweets: process.env.NODE_ENV === 'test' ? '1343425316210737265' : process.env.TWEETS_CHANNEL_ID || '',
+            solana: process.env.NODE_ENV === 'test' ? '1343425316210737265' : process.env.SOLANA_CHANNEL_ID || '',
+            vip: process.env.NODE_ENV === 'test' ? '1343425355125358592' : process.env.VIP_CHANNEL_ID || ''
+        }
+    },
+    birdeye: {
+        apiKey: process.env.BIRDEYE_API_KEY || '',
+        rateLimit: {
+            requestsPerWindow: 60,
+            windowSizeMinutes: 1,
+            safetyMargin: 0.9
         }
     },
     database: {
@@ -41,7 +76,8 @@ function validateConfig() {
     
     const required = {
         twitter: ['apiKey', 'apiKeySecret', 'bearerToken', 'accessToken', 'accessTokenSecret'],
-        discord: ['token', 'clientId', 'guildId', 'channels.tweets', 'channels.solana']
+        discord: ['token', 'clientId', 'guildId', 'channels.tweets', 'channels.solana'],
+        birdeye: ['apiKey']
     };
 
     for (const [section, fields] of Object.entries(required)) {

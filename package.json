@@ -7,7 +7,8 @@
     "start": "node src/index.js",
     "register": "node src/commands/registerCommands.js",
     "test": "jest --config jest.config.js",
-    "test:integration": "jest src/tests/integration.test.js --config jest.config.js --detectOpenHandles --forceExit"
+    "test:integration": "jest src/tests/integration.test.js --config jest.config.js --detectOpenHandles --forceExit",
+    "test-bot": "node test-bot.js"
   },
   "dependencies": {
     "axios": "^1.7.9",
