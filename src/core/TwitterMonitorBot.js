@@ -188,21 +188,23 @@ class TwitterMonitorBot {
             console.log('📊 Initializing database...');
             const dataDir = path.dirname(config.database.path);
             
-            // Create data directory if it doesn't exist
+            // Always try to create the data directory
             try {
-                if (process.env.NODE_ENV === 'production') {
-                    // In production (Railways), /data should already exist and be writable
-                    console.log('Production environment detected, using /data directory');
-                    await fs.access(dataDir, fs.constants.W_OK);
-                    console.log(`✅ Production data directory ${dataDir} is accessible and writable`);
-                } else {
-                    // In development, create the directory if needed
-                    await fs.mkdir(dataDir, { recursive: true });
-                    console.log(`✅ Development data directory created/verified: ${dataDir}`);
-                }
+                console.log(`Creating/verifying data directory: ${dataDir}`);
+                await fs.mkdir(dataDir, { recursive: true });
+                console.log(`✅ Data directory created/verified: ${dataDir}`);
             } catch (error) {
-                console.error(`❌ Data directory error: ${error.message}`);
-                throw error; // In production, we want to fail if /data is not accessible
+                console.error(`❌ Could not create directory ${dataDir}:`, error.message);
+                throw error;
+            }
+
+            // Verify directory is writable
+            try {
+                await fs.access(dataDir, fs.constants.W_OK);
+                console.log(`✅ Directory ${dataDir} is writable`);
+            } catch (error) {
+                console.error(`❌ Directory ${dataDir} is not writable:`, error.message);
+                throw error;
             }
             
             console.log('🔌 Connecting to database:', config.database.path);
