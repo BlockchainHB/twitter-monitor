@@ -1,0 +1,1 @@
+worker: npm install && npm run register && npm start 
