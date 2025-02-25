@@ -1,1 +1,1 @@
-worker: npm install && npm run register && npm start 
+worker: NODE_ENV=production npm install --omit=dev && npm start 

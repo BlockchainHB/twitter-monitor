@@ -1,4 +1,6 @@
-require('dotenv').config();
+require('dotenv').config({
+    path: process.env.NODE_ENV === 'test' ? '.env.test' : '.env'
+});
 const path = require('path');
 
 // Configuration
@@ -47,10 +49,10 @@ const config = {
         clientId: process.env.DISCORD_CLIENT_ID || '',
         guildId: process.env.DISCORD_GUILD_ID || '',
         channels: {
-            tweets: process.env.NODE_ENV === 'test' ? '1343425316210737265' : process.env.TWEETS_CHANNEL_ID || '',
-            solana: process.env.NODE_ENV === 'test' ? '1343425316210737265' : process.env.SOLANA_CHANNEL_ID || '',
-            vip: process.env.NODE_ENV === 'test' ? '1343425355125358592' : process.env.VIP_CHANNEL_ID || '',
-            wallets: process.env.NODE_ENV === 'test' ? '1343811846599086121' : process.env.WALLETS_CHANNEL_ID || ''
+            tweets: process.env.TWEETS_CHANNEL_ID || '',
+            solana: process.env.SOLANA_CHANNEL_ID || '',
+            vip: process.env.VIP_CHANNEL_ID || '',
+            wallets: process.env.WALLETS_CHANNEL_ID || ''
         }
     },
     helius: {
@@ -82,7 +84,7 @@ function validateConfig() {
     
     const required = {
         twitter: ['apiKey', 'apiKeySecret', 'bearerToken', 'accessToken', 'accessTokenSecret'],
-        discord: ['token', 'clientId', 'guildId', 'channels.tweets', 'channels.solana'],
+        discord: ['token', 'clientId', 'guildId'],
         helius: ['apiKey', 'webhookUrl']
     };
 
@@ -95,7 +97,7 @@ function validateConfig() {
             if (!value) {
                 const error = `Missing required configuration: ${section}.${field}`;
                 console.error(error);
-                throw new Error(error);
+                throw error;
             }
         }
     }
@@ -104,8 +106,8 @@ function validateConfig() {
     return true;
 }
 
-// Validate configuration in non-test environments
-if (process.env.NODE_ENV !== 'test') {
+// Validate configuration in production
+if (process.env.NODE_ENV === 'production') {
     validateConfig();
 }
 
