@@ -190,29 +190,34 @@ class TwitterMonitorBot {
             
             // Create data directory if it doesn't exist
             try {
-                await fs.mkdir(dataDir, { recursive: true, mode: 0o777 });
-                console.log(`✅ Data directory created/verified: ${dataDir}`);
-            } catch (error) {
-                console.warn(`⚠️ Could not create directory ${dataDir}:`, error.message);
-                // Continue anyway as the directory might already exist
-            }
-
-            // Ensure the directory is writable
-            try {
-                await fs.access(dataDir, fs.constants.W_OK);
-                console.log(`✅ Directory ${dataDir} is writable`);
-            } catch (error) {
-                console.error(`❌ Directory ${dataDir} is not writable:`, error.message);
-                // Try to set permissions
-                try {
-                    await fs.chmod(dataDir, 0o777);
-                    console.log(`✅ Set permissions on ${dataDir} to 777`);
-                } catch (chmodError) {
-                    console.error(`❌ Could not set directory permissions:`, chmodError.message);
+                if (process.env.NODE_ENV === 'production') {
+                    // In production (Railways), /data should already exist and be writable
+                    console.log('Production environment detected, using /data directory');
+                    await fs.access(dataDir, fs.constants.W_OK);
+                    console.log(`✅ Production data directory ${dataDir} is accessible and writable`);
+                } else {
+                    // In development, create the directory if needed
+                    await fs.mkdir(dataDir, { recursive: true });
+                    console.log(`✅ Development data directory created/verified: ${dataDir}`);
                 }
+            } catch (error) {
+                console.error(`❌ Data directory error: ${error.message}`);
+                throw error; // In production, we want to fail if /data is not accessible
             }
             
             console.log('🔌 Connecting to database:', config.database.path);
+
+            // Initialize database with proper permissions
+            this.db = new sqlite3.Database(config.database.path, 
+                sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE,
+                (err) => {
+                    if (err) {
+                        console.error('❌ Database connection error:', err);
+                        throw err;
+                    }
+                    console.log('✅ Database connection established');
+                }
+            );
 
             // Enable foreign keys and WAL mode for better performance
             await this.dbRun('PRAGMA foreign_keys = ON');
