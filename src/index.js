@@ -31,26 +31,27 @@ async function main() {
         console.log('- Database Path:', config.database.path);
         console.log('- Monitoring Interval:', config.monitoring.interval, 'ms');
         
-        // Register commands first
+        // Create bot instance first
+        console.log('\n🤖 Initializing Bot Instance...');
+        const bot = new TwitterMonitorBot();
+
+        // Set up bot and wait for Discord client to be ready
+        console.log('\n📋 Starting Setup Sequence:');
+        await bot.setupBot();
+        
+        // Now that Discord client is ready, register commands
         console.log('\n📝 Registering Discord commands...');
         try {
-            await registerCommands();
+            await registerCommands(bot.client);
             console.log('✅ Commands registered successfully');
         } catch (error) {
             console.error('❌ Failed to register commands:', error);
             throw error;
         }
 
-        // Create bot instance
-        console.log('\n🤖 Initializing Bot Instance...');
-        const bot = new TwitterMonitorBot();
-
         // Set up periodic memory logging
         const memoryInterval = setInterval(logMemoryUsage, 60000);
 
-        // Log startup phases
-        console.log('\n📋 Starting Setup Sequence:');
-        await bot.setupBot();
         console.log('\n✅ Bot is ready and monitoring!');
         logMemoryUsage();
 

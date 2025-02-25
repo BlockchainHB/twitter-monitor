@@ -163,12 +163,12 @@ const commands = [
     }
 ];
 
-// Create REST instance
-const rest = new REST({ version: '10' }).setToken(config.discord.token);
-
-async function registerCommands() {
+async function registerCommands(client = null) {
     try {
         console.log('Started refreshing application (/) commands.');
+
+        // Use provided client or create new REST instance
+        const rest = client ? client.rest : new REST({ version: '10' }).setToken(config.discord.token);
 
         await rest.put(
             Routes.applicationGuildCommands(config.discord.clientId, config.discord.guildId),
@@ -178,12 +178,22 @@ async function registerCommands() {
         console.log('Successfully reloaded application (/) commands.');
     } catch (error) {
         console.error('Error registering commands:', error);
+        throw error;
     }
 }
 
 // Run if called directly
 if (require.main === module) {
-    registerCommands();
+    const { Client, GatewayIntentBits } = require('discord.js');
+    const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+    
+    client.login(config.discord.token)
+        .then(() => registerCommands(client))
+        .then(() => process.exit(0))
+        .catch(error => {
+            console.error('Failed to register commands:', error);
+            process.exit(1);
+        });
 }
 
 module.exports = { registerCommands }; 
