@@ -13,6 +13,9 @@ const HeliusService = require('./HeliusService');
 
 class TwitterMonitorBot {
     constructor() {
+        // Store config
+        this.config = config;
+
         // Initialize Discord client with required intents
         this.client = new Client({
             intents: [
@@ -132,13 +135,39 @@ class TwitterMonitorBot {
             
             // Create data directory if it doesn't exist
             const dataDir = path.dirname(this.config.database.path);
+            console.log(`Creating database directory: ${dataDir}`);
             await fs.mkdir(dataDir, { recursive: true });
             
+            // Close existing connection if any
+            if (this.db) {
+                await new Promise((resolve, reject) => {
+                    this.db.close((err) => {
+                        if (err) reject(err);
+                        else resolve();
+                    });
+                });
+            }
+            
             // Connect to database
-            this.db = new sqlite3.Database(this.config.database.path);
+            console.log(`Connecting to database at: ${this.config.database.path}`);
+            this.db = new sqlite3.Database(this.config.database.path, 
+                sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE,
+                (err) => {
+                    if (err) {
+                        console.error('❌ Database connection error:', err);
+                        throw err;
+                    }
+                }
+            );
+            
+            // Set pragmas for better performance
+            await this.dbRun('PRAGMA journal_mode = WAL');
+            await this.dbRun('PRAGMA synchronous = NORMAL');
+            await this.dbRun('PRAGMA foreign_keys = ON');
             
             // Initialize schema
             const schemaPath = path.join(process.cwd(), 'src', 'database', 'schema.sql');
+            console.log(`Loading schema from: ${schemaPath}`);
             const schema = await fs.readFile(schemaPath, 'utf8');
             
             // Execute schema
@@ -153,6 +182,7 @@ class TwitterMonitorBot {
                 await this.dbRun('COMMIT');
                 console.log('✅ Schema initialized successfully');
             } catch (error) {
+                console.error('❌ Error executing schema:', error);
                 await this.dbRun('ROLLBACK');
                 throw error;
             }
