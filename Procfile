@@ -1,1 +1,1 @@
-worker: npm ci --omit=dev --no-warnings && npm start 
+worker: npm install --omit=dev && npm start 
