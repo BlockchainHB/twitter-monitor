@@ -4,7 +4,7 @@ const sqlite3 = require('sqlite3');
 const { promisify } = require('util');
 const config = require('../config/config');
 const path = require('path');
-const fs = require('fs/promises');
+const fs = require('fs').promises;
 const RateLimitManager = require('./RateLimitManager');
 const DexScreenerService = require('./DexScreenerService');
 const BirdeyeService = require('./BirdeyeService');
@@ -129,157 +129,37 @@ class TwitterMonitorBot {
     async initializeDatabase() {
         try {
             console.log('📊 Initializing database...');
-            const dataDir = path.dirname(config.database.path);
             
-            // Always try to create the data directory
+            // Create data directory if it doesn't exist
+            const dataDir = path.dirname(this.config.database.path);
+            await fs.mkdir(dataDir, { recursive: true });
+            
+            // Connect to database
+            this.db = new sqlite3.Database(this.config.database.path);
+            
+            // Initialize schema
+            const schemaPath = path.join(process.cwd(), 'src', 'database', 'schema.sql');
+            const schema = await fs.readFile(schemaPath, 'utf8');
+            
+            // Execute schema
+            await this.dbRun('BEGIN TRANSACTION');
             try {
-                console.log(`Creating/verifying data directory: ${dataDir}`);
-                await fs.mkdir(dataDir, { recursive: true });
-                console.log(`✅ Data directory created/verified: ${dataDir}`);
-            } catch (error) {
-                console.error(`❌ Could not create directory ${dataDir}:`, error.message);
-                throw error;
-            }
-
-            // Verify directory is writable
-            try {
-                await fs.access(dataDir, fs.constants.W_OK);
-                console.log(`✅ Directory ${dataDir} is writable`);
-            } catch (error) {
-                console.error(`❌ Directory ${dataDir} is not writable:`, error.message);
-                throw error;
-            }
-            
-            // Close any existing connection
-            if (this.db) {
-                await new Promise((resolve) => {
-                    this.db.close(() => resolve());
-                });
-            }
-            
-            console.log('🔌 Connecting to database:', config.database.path);
-
-            // Initialize database with proper permissions and busy timeout
-            this.db = new sqlite3.Database(config.database.path, 
-                sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE,
-                (err) => {
-                    if (err) {
-                        console.error('❌ Database connection error:', err);
-                        throw err;
+                const statements = schema.split(';').filter(stmt => stmt.trim());
+                for (const statement of statements) {
+                    if (statement.trim()) {
+                        await this.dbRun(statement);
                     }
-                    console.log('✅ Database connection established');
                 }
-            );
-
-            // Set busy timeout to 60 seconds
-            await this.dbRun('PRAGMA busy_timeout = 60000');
-            
-            // Enable foreign keys and WAL mode for better performance
-            await this.dbRun('PRAGMA foreign_keys = ON');
-            await this.dbRun('PRAGMA journal_mode = WAL');
-            await this.dbRun('PRAGMA synchronous = NORMAL');
-            
-            // Create tables with proper indexes and constraints
-            await this.dbRun(`
-                CREATE TABLE IF NOT EXISTS monitored_accounts (
-                    twitter_id TEXT PRIMARY KEY,
-                    username TEXT NOT NULL,
-                    monitoring_type TEXT NOT NULL CHECK (monitoring_type IN ('tweet', 'solana', 'vip')),
-                    last_tweet_id TEXT,
-                    profile_data TEXT,
-                    is_vip INTEGER DEFAULT 0,
-                    last_check_time INTEGER,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-            `);
-
-            await this.dbRun(`
-                CREATE TABLE IF NOT EXISTS processed_tweets (
-                    tweet_id TEXT PRIMARY KEY,
-                    twitter_id TEXT NOT NULL,
-                    conversation_id TEXT,
-                    referenced_tweet_id TEXT,
-                    tweet_type TEXT CHECK (tweet_type IN ('tweet', 'reply', 'quote', 'retweet')),
-                    processed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (twitter_id) REFERENCES monitored_accounts(twitter_id) ON DELETE CASCADE
-                )
-            `);
-
-            await this.dbRun(`
-                CREATE TABLE IF NOT EXISTS tracked_tokens (
-                    address TEXT PRIMARY KEY,
-                    symbol TEXT,
-                    name TEXT,
-                    first_seen_tweet_id TEXT NULL,
-                    first_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    last_price REAL,
-                    last_updated DATETIME,
-                    FOREIGN KEY (first_seen_tweet_id) REFERENCES processed_tweets(tweet_id) ON DELETE SET NULL
-                )
-            `);
-
-            await this.dbRun(`
-                CREATE TABLE IF NOT EXISTS token_mentions (
-                    tweet_id TEXT,
-                    token_address TEXT,
-                    mentioned_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    PRIMARY KEY (tweet_id, token_address),
-                    FOREIGN KEY (tweet_id) REFERENCES processed_tweets(tweet_id) ON DELETE CASCADE,
-                    FOREIGN KEY (token_address) REFERENCES tracked_tokens(address) ON DELETE CASCADE
-                )
-            `);
-
-            await this.dbRun(`
-                CREATE TABLE IF NOT EXISTS sms_subscribers (
-                    discord_user_id TEXT PRIMARY KEY,
-                    phone_number TEXT NOT NULL,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-            `);
-
-            await this.dbRun(`
-                CREATE TABLE IF NOT EXISTS rate_limits (
-                    endpoint TEXT PRIMARY KEY,
-                    remaining INTEGER NOT NULL,
-                    reset_at DATETIME NOT NULL,
-                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-            `);
-
-            await this.dbRun(`
-                CREATE TABLE IF NOT EXISTS monitored_wallets (
-                    wallet_address TEXT PRIMARY KEY,
-                    name TEXT NOT NULL,
-                    last_tx_time INTEGER,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-            `);
-
-            await this.dbRun('CREATE INDEX IF NOT EXISTS idx_monitored_wallets_name ON monitored_wallets(name)');
-
-            // Create indexes for better query performance
-            await this.dbRun('CREATE INDEX IF NOT EXISTS idx_monitored_accounts_username ON monitored_accounts(username)');
-            await this.dbRun('CREATE INDEX IF NOT EXISTS idx_monitored_accounts_type ON monitored_accounts(monitoring_type)');
-            await this.dbRun('CREATE INDEX IF NOT EXISTS idx_processed_tweets_twitter_id ON processed_tweets(twitter_id)');
-            await this.dbRun('CREATE INDEX IF NOT EXISTS idx_processed_tweets_conversation ON processed_tweets(conversation_id)');
-            await this.dbRun('CREATE INDEX IF NOT EXISTS idx_token_mentions_token ON token_mentions(token_address)');
-            await this.dbRun('CREATE INDEX IF NOT EXISTS idx_tracked_tokens_symbol ON tracked_tokens(symbol)');
-
-            // Create trigger to update the updated_at timestamp
-            await this.dbRun(`
-                CREATE TRIGGER IF NOT EXISTS update_account_timestamp 
-                AFTER UPDATE ON monitored_accounts
-                BEGIN
-                    UPDATE monitored_accounts 
-                    SET updated_at = CURRENT_TIMESTAMP 
-                    WHERE twitter_id = NEW.twitter_id;
-                END
-            `);
+                await this.dbRun('COMMIT');
+                console.log('✅ Schema initialized successfully');
+            } catch (error) {
+                await this.dbRun('ROLLBACK');
+                throw error;
+            }
 
             console.log('✅ Database initialization complete');
         } catch (error) {
-            console.error('❌ Database initialization error:', error);
+            console.error('❌ Database initialization failed:', error);
             throw error;
         }
     }
