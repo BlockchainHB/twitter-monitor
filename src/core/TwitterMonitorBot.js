@@ -99,27 +99,38 @@ class TwitterMonitorBot {
             await this.initializeDatabase();
             
             // Set up Discord client
-            await this.client.login(config.discord.token);
+            await this.client.login(this.config.discord.token);
             
             // Get guild and cache channels
-            this.guild = this.client.guilds.cache.get(config.discord.guildId);
+            this.guild = this.client.guilds.cache.get(this.config.discord.guildId);
             if (!this.guild) {
                 throw new Error('Could not find configured guild');
             }
             
             // Cache channel IDs
             this.channels = {
-                tweets: config.discord.channels.tweets,
-                solana: config.discord.channels.solana,
-                vip: config.discord.channels.vip,
-                wallets: config.discord.channels.wallets
+                tweets: this.config.discord.channels.tweets,
+                solana: this.config.discord.channels.solana,
+                vip: this.config.discord.channels.vip,
+                wallets: this.config.discord.channels.wallets
             };
             
             // Set up command handling
             this.setupCommandHandling();
             
             // Sync wallets with Helius
-            await this.helius.syncWallets(config.helius.webhookUrl);
+            try {
+                console.log('🔄 Syncing wallets with Helius...');
+                await this.helius.syncWallets(this.config.helius.webhookUrl);
+                console.log('✅ Helius wallet sync completed');
+            } catch (error) {
+                // Log error but don't fail setup - we can retry sync later
+                console.error('⚠️ Helius wallet sync failed:', error);
+                if (error.response) {
+                    console.error('Response data:', error.response.data);
+                    console.error('Response status:', error.response.status);
+                }
+            }
             
             console.log('✅ Bot setup completed successfully');
             

@@ -49,6 +49,8 @@ class HeliusService {
             const wallets = await this.db.all('SELECT wallet_address FROM monitored_wallets');
             const accountAddresses = wallets.map(w => w.wallet_address);
 
+            console.log(`Found ${accountAddresses.length} wallets to monitor`);
+
             // First, list all existing webhooks
             console.log('🔍 Checking existing webhooks...');
             const existingWebhooks = await this.rateLimitManager.scheduleRequest(
@@ -77,13 +79,28 @@ class HeliusService {
             // Clear any existing webhook records in the database
             await this.db.run('DELETE FROM helius_webhooks');
 
+            // Only create webhook if we have wallets to monitor
+            if (accountAddresses.length === 0) {
+                console.log('ℹ️ No wallets to monitor, skipping webhook creation');
+                return null;
+            }
+
             // Create new webhook
             console.log('🆕 Creating new webhook...');
+            console.log(`Webhook URL: ${webhookUrl}`);
+            console.log(`Account Addresses: ${JSON.stringify(accountAddresses)}`);
+            
             const response = await this.rateLimitManager.scheduleRequest(
                 () => this.createWebhook(webhookUrl, accountAddresses),
                 'helius/webhooks/create'
             );
+
+            if (!response || !response.webhookID) {
+                throw new Error('Failed to get webhook ID from response');
+            }
+
             const webhookId = response.webhookID;
+            console.log(`✅ Created webhook with ID: ${webhookId}`);
 
             // Store webhook info
             await this.db.run(
@@ -94,23 +111,46 @@ class HeliusService {
             console.log(`✅ Successfully synced ${accountAddresses.length} wallets with Helius`);
             return webhookId;
         } catch (error) {
-            console.error('❌ Failed to sync wallets with Helius:', error.message);
+            console.error('❌ Failed to sync wallets with Helius:', error);
+            if (error.response) {
+                console.error('Response data:', error.response.data);
+                console.error('Response status:', error.response.status);
+            }
             throw error;
         }
     }
 
     // Create a new webhook for tracking wallets
     async createWebhook(webhookUrl, accountAddresses) {
+        if (!webhookUrl) {
+            throw new Error('Webhook URL is required');
+        }
+        if (!Array.isArray(accountAddresses) || accountAddresses.length === 0) {
+            throw new Error('At least one account address is required');
+        }
+
         try {
-            const response = await axios.post(`${this.baseUrl}/webhooks?api-key=${this.apiKey}`, {
+            const payload = {
                 webhookURL: webhookUrl,
                 accountAddresses,
                 transactionTypes: ['SWAP'],
                 webhookType: 'enhanced'
-            });
+            };
+            console.log('Creating webhook with payload:', JSON.stringify(payload, null, 2));
+
+            const response = await axios.post(`${this.baseUrl}/webhooks?api-key=${this.apiKey}`, payload);
+            
+            if (!response.data || !response.data.webhookID) {
+                throw new Error('Invalid response from Helius API: ' + JSON.stringify(response.data));
+            }
+            
             return response.data;
         } catch (error) {
             console.error('[ERROR] Failed to create Helius webhook:', error.message);
+            if (error.response) {
+                console.error('Response data:', error.response.data);
+                console.error('Response status:', error.response.status);
+            }
             throw error;
         }
     }
