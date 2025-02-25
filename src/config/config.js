@@ -85,9 +85,13 @@ function validateConfig() {
     const required = {
         twitter: ['apiKey', 'apiKeySecret', 'bearerToken', 'accessToken', 'accessTokenSecret'],
         discord: ['token', 'clientId', 'guildId'],
-        helius: ['apiKey', 'webhookUrl'],
-        twilio: ['accountSid', 'authToken', 'phoneNumber']
+        helius: ['apiKey', 'webhookUrl']
     };
+
+    // Optional Twilio validation only if any Twilio config is present
+    if (config.twilio.accountSid || config.twilio.authToken || config.twilio.phoneNumber) {
+        required.twilio = ['accountSid', 'authToken', 'phoneNumber'];
+    }
 
     for (const [section, fields] of Object.entries(required)) {
         for (const field of fields) {

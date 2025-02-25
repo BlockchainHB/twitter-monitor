@@ -24,14 +24,15 @@ Discord bot for monitoring Twitter accounts and Solana wallets.
 - `HELIUS_API_KEY`
 - `HELIUS_WEBHOOK_URL`
 
-### Twilio Configuration (for SMS alerts)
-- `TWILIO_ACCOUNT_SID`
-- `TWILIO_AUTH_TOKEN`
-- `TWILIO_PHONE_NUMBER`
-
 ### Optional Configuration
 - `NODE_ENV` - Set to 'production' for deployment
 - `MONITORING_INTERVAL` - Interval in milliseconds (default: 60000)
+
+### Optional SMS Alerts (Twilio)
+If you want to enable SMS alerts, set all of these:
+- `TWILIO_ACCOUNT_SID`
+- `TWILIO_AUTH_TOKEN`
+- `TWILIO_PHONE_NUMBER`
 
 ## Deployment
 
@@ -45,7 +46,7 @@ Discord bot for monitoring Twitter accounts and Solana wallets.
 
 - Monitor Twitter accounts for new tweets
 - Track Solana wallet transactions
-- SMS notifications for large swaps (≥ $1000)
+- SMS notifications for large swaps (≥ $1000) - *requires Twilio configuration*
 - Discord notifications for all swaps (≥ $100)
 - Token security and metrics analysis
 - Trending/gainers/volume tracking 
