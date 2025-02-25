@@ -114,6 +114,52 @@ const commands = [
     {
         name: 'help',
         description: 'Show all available commands and their usage'
+    },
+    {
+        name: 'smsalert',
+        description: 'Register your phone number for Solana token notifications',
+        options: [
+            {
+                name: 'phone',
+                description: 'Phone number in international format (e.g., +1234567890)',
+                type: 3,
+                required: true
+            }
+        ]
+    },
+    {
+        name: 'stopsms',
+        description: 'Stop receiving SMS notifications'
+    },
+    {
+        name: 'trackwallet',
+        description: 'Track a Solana wallet',
+        options: [
+            {
+                name: 'name',
+                description: 'Name to identify this wallet',
+                type: 3,
+                required: true
+            },
+            {
+                name: 'wallet',
+                description: 'Solana wallet address to track',
+                type: 3,
+                required: true
+            }
+        ]
+    },
+    {
+        name: 'stopwallet',
+        description: 'Stop tracking a wallet',
+        options: [
+            {
+                name: 'wallet',
+                description: 'Solana wallet address to stop tracking',
+                type: 3,
+                required: true
+            }
+        ]
     }
 ];
 

@@ -49,16 +49,20 @@ const config = {
         channels: {
             tweets: process.env.NODE_ENV === 'test' ? '1343425316210737265' : process.env.TWEETS_CHANNEL_ID || '',
             solana: process.env.NODE_ENV === 'test' ? '1343425316210737265' : process.env.SOLANA_CHANNEL_ID || '',
-            vip: process.env.NODE_ENV === 'test' ? '1343425355125358592' : process.env.VIP_CHANNEL_ID || ''
+            vip: process.env.NODE_ENV === 'test' ? '1343425355125358592' : process.env.VIP_CHANNEL_ID || '',
+            wallets: process.env.NODE_ENV === 'test' ? '1343811846599086121' : process.env.WALLETS_CHANNEL_ID || ''
         }
     },
-    birdeye: {
-        apiKey: process.env.BIRDEYE_API_KEY || '',
-        rateLimit: {
-            requestsPerWindow: 60,
-            windowSizeMinutes: 1,
-            safetyMargin: 0.9
-        }
+    helius: {
+        apiKey: process.env.HELIUS_API_KEY || '',
+        webhookUrl: process.env.HELIUS_WEBHOOK_URL || '',
+        minSwapValue: 100, // Minimum USD value for Discord notifications
+        minSmsSwapValue: 1000, // Minimum USD value for SMS notifications
+    },
+    twilio: {
+        accountSid: process.env.TWILIO_ACCOUNT_SID || 'AC3baaf089beb94d7d957d5a82fb8cdeba',
+        authToken: process.env.TWILIO_AUTH_TOKEN || 'f7cd211fb9c776d172ed6ff9221c91e6',
+        phoneNumber: process.env.TWILIO_PHONE_NUMBER || '+17813835092'
     },
     database: {
         path: process.env.NODE_ENV === 'production' 
@@ -79,7 +83,7 @@ function validateConfig() {
     const required = {
         twitter: ['apiKey', 'apiKeySecret', 'bearerToken', 'accessToken', 'accessTokenSecret'],
         discord: ['token', 'clientId', 'guildId', 'channels.tweets', 'channels.solana'],
-        birdeye: ['apiKey']
+        helius: ['apiKey', 'webhookUrl']
     };
 
     for (const [section, fields] of Object.entries(required)) {

@@ -1,5 +1,9 @@
 const express = require('express');
 const app = express();
+const TwitterMonitorBot = require('./core/TwitterMonitorBot');
+
+// Initialize bot
+const bot = new TwitterMonitorBot();
 
 // Startup logging
 console.log('🚀 Starting server...');
@@ -16,7 +20,7 @@ app.use(express.urlencoded({ extended: true }));
 app.use((req, res, next) => {
     res.header('Access-Control-Allow-Origin', '*');
     res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, X-API-KEY');
+    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
     next();
 });
 
@@ -24,7 +28,6 @@ app.use((req, res, next) => {
 app.use((req, res, next) => {
     const start = Date.now();
     console.log(`📝 ${req.method} ${req.path} - Started`);
-    console.log('Headers:', JSON.stringify(req.headers, null, 2));
     
     res.on('finish', () => {
         const duration = Date.now() - start;
@@ -42,47 +45,16 @@ app.options('*', (req, res) => {
 // Webhook endpoint
 app.post('/api/wallet-webhook', async (req, res) => {
     try {
-        console.log('\n📥 Webhook received at:', new Date().toISOString());
-        console.log('Headers:', JSON.stringify(req.headers, null, 2));
+        console.log('📥 Webhook received');
+        console.log('Headers:', req.headers);
         
         const webhook = req.body;
         console.log('📥 Webhook body:', JSON.stringify(webhook, null, 2));
         
-        // Validate webhook structure
-        if (!webhook) {
-            console.error('❌ No webhook data received');
-            return res.status(400).json({ error: 'No webhook data received' });
-        }
-
-        // Handle Helius test webhook
-        if (webhook.webhookId === 'test') {
-            console.log('✅ Test webhook received successfully');
-            return res.status(200).json({ 
-                status: 'success',
-                message: 'Test webhook received successfully',
-                timestamp: new Date().toISOString()
-            });
-        }
+        // Forward to bot's webhook handler
+        await bot.handleWebhook(webhook);
         
-        // Log specific transaction details if present
-        if (webhook.events) {
-            webhook.events.forEach((event, index) => {
-                console.log(`🔍 Event ${index + 1}:`, {
-                    type: event.type,
-                    signature: event.signature,
-                    timestamp: event.timestamp,
-                    accountKeys: event.accountKeys,
-                    nativeTransfers: event.nativeTransfers,
-                    tokenTransfers: event.tokenTransfers
-                });
-            });
-        }
-        
-        res.status(200).json({ 
-            status: 'success',
-            message: 'Webhook processed successfully',
-            timestamp: new Date().toISOString()
-        });
+        res.status(200).json({ status: 'received' });
     } catch (error) {
         console.error('❌ Error handling webhook:', error);
         res.status(500).json({ error: 'Internal server error' });
@@ -115,10 +87,19 @@ app.use((err, req, res, next) => {
 
 // Start server with proper error handling
 const PORT = process.env.PORT || 8080;
-const server = app.listen(PORT, '0.0.0.0', () => {
+const server = app.listen(PORT, '0.0.0.0', async () => {
     console.log(`✅ Server is running on port ${PORT}`);
     console.log(`📡 Webhook endpoint: https://${process.env.RAILWAY_PUBLIC_DOMAIN || `localhost:${PORT}`}/api/wallet-webhook`);
     console.log(`🏥 Health check: https://${process.env.RAILWAY_PUBLIC_DOMAIN || `localhost:${PORT}`}/health`);
+    
+    // Initialize bot
+    try {
+        await bot.setupBot();
+        console.log('✅ Bot initialized successfully');
+    } catch (error) {
+        console.error('❌ Failed to initialize bot:', error);
+        process.exit(1);
+    }
 });
 
 // Handle server errors
