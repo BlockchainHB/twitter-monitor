@@ -1,5 +1,6 @@
 const TwitterMonitorBot = require('./core/TwitterMonitorBot');
 const config = require('./config/config');
+const { registerCommands } = require('./commands/registerCommands');
 
 // Debug logging setup
 process.env.DEBUG = '*';
@@ -30,6 +31,16 @@ async function main() {
         console.log('- Database Path:', config.database.path);
         console.log('- Monitoring Interval:', config.monitoring.interval, 'ms');
         
+        // Register commands first
+        console.log('\n📝 Registering Discord commands...');
+        try {
+            await registerCommands();
+            console.log('✅ Commands registered successfully');
+        } catch (error) {
+            console.error('❌ Failed to register commands:', error);
+            throw error;
+        }
+
         // Create bot instance
         console.log('\n🤖 Initializing Bot Instance...');
         const bot = new TwitterMonitorBot();

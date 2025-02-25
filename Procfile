@@ -1,1 +1,1 @@
-worker: npm install --omit=dev && npm start 
+worker: npm install --omit=dev && npm run register && npm start 
