@@ -68,7 +68,7 @@ const config = {
     },
     database: {
         path: process.env.NODE_ENV === 'production' 
-            ? path.join('/app', 'twitter-monitor.db')
+            ? path.join('/app', 'data', 'twitter-monitor.db')
             : path.join(process.cwd(), 'data', 'twitter-monitor.db'),
         logging: process.env.NODE_ENV === 'development'
     },

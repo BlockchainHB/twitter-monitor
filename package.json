@@ -4,9 +4,10 @@
   "description": "Discord bot for monitoring Twitter and Solana wallets",
   "main": "src/index.js",
   "scripts": {
-    "start": "node src/index.js",
+    "start": "node src/database/runMigrations.js && node src/index.js",
     "test": "jest",
-    "register": "node src/commands/registerCommands.js"
+    "register": "node src/commands/registerCommands.js",
+    "migrate": "node src/database/runMigrations.js"
   },
   "dependencies": {
     "axios": "^1.6.7",

@@ -1,6 +1,6 @@
 require('dotenv').config({ path: '.env.test' });
-const TwitterMonitorBot = require('./src/core/TwitterMonitorBot');
-const { registerCommands } = require('./src/commands/registerCommands');
+const TwitterMonitorBot = require('../core/TwitterMonitorBot');
+const { registerCommands } = require('../commands/registerCommands');
 
 async function startTestBot() {
     try {
