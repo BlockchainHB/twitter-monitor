@@ -61,7 +61,9 @@ const config = {
         }
     },
     database: {
-        path: path.join(process.cwd(), 'data', 'twitter-monitor.db'),
+        path: process.env.RAILWAY_VOLUME_MOUNT_PATH 
+            ? path.join(process.env.RAILWAY_VOLUME_MOUNT_PATH, 'twitter-monitor.db')
+            : path.join(process.cwd(), 'data', 'twitter-monitor.db'),
         logging: process.env.NODE_ENV === 'development'
     },
     monitoring: {

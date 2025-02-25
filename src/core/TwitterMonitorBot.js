@@ -189,7 +189,28 @@ class TwitterMonitorBot {
             const dataDir = path.dirname(config.database.path);
             
             // Create data directory if it doesn't exist
-            await fs.mkdir(dataDir, { recursive: true });
+            try {
+                await fs.mkdir(dataDir, { recursive: true, mode: 0o777 });
+                console.log(`✅ Data directory created/verified: ${dataDir}`);
+            } catch (error) {
+                console.warn(`⚠️ Could not create directory ${dataDir}:`, error.message);
+                // Continue anyway as the directory might already exist
+            }
+
+            // Ensure the directory is writable
+            try {
+                await fs.access(dataDir, fs.constants.W_OK);
+                console.log(`✅ Directory ${dataDir} is writable`);
+            } catch (error) {
+                console.error(`❌ Directory ${dataDir} is not writable:`, error.message);
+                // Try to set permissions
+                try {
+                    await fs.chmod(dataDir, 0o777);
+                    console.log(`✅ Set permissions on ${dataDir} to 777`);
+                } catch (chmodError) {
+                    console.error(`❌ Could not set directory permissions:`, chmodError.message);
+                }
+            }
             
             console.log('🔌 Connecting to database:', config.database.path);
 
