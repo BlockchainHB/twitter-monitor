@@ -1,1 +1,1 @@
-worker: NODE_ENV=production npm install --omit=dev && npm start 
+worker: NODE_ENV=production mkdir -p /app && npm install --omit=dev && npm start 

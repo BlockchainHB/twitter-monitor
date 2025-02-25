@@ -62,9 +62,9 @@ const config = {
         minSmsSwapValue: 1000, // Minimum USD value for SMS notifications
     },
     twilio: {
-        accountSid: process.env.TWILIO_ACCOUNT_SID || 'AC3baaf089beb94d7d957d5a82fb8cdeba',
-        authToken: process.env.TWILIO_AUTH_TOKEN || 'f7cd211fb9c776d172ed6ff9221c91e6',
-        phoneNumber: process.env.TWILIO_PHONE_NUMBER || '+17813835092'
+        accountSid: process.env.TWILIO_ACCOUNT_SID || '',
+        authToken: process.env.TWILIO_AUTH_TOKEN || '',
+        phoneNumber: process.env.TWILIO_PHONE_NUMBER || ''
     },
     database: {
         path: process.env.NODE_ENV === 'production' 
@@ -85,7 +85,8 @@ function validateConfig() {
     const required = {
         twitter: ['apiKey', 'apiKeySecret', 'bearerToken', 'accessToken', 'accessTokenSecret'],
         discord: ['token', 'clientId', 'guildId'],
-        helius: ['apiKey', 'webhookUrl']
+        helius: ['apiKey', 'webhookUrl'],
+        twilio: ['accountSid', 'authToken', 'phoneNumber']
     };
 
     for (const [section, fields] of Object.entries(required)) {
