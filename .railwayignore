@@ -1,4 +1,12 @@
+# Docker files
 Dockerfile
 docker-compose.yml
 .dockerignore
-docker/ 
+docker/
+.docker/
+*.dockerfile
+
+# Build artifacts
+.nixpacks
+.railway
+railway.toml 
