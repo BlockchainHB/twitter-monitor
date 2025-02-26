@@ -609,22 +609,25 @@ class TwitterMonitorBot {
         console.log('🔄 Setting up command handling...');
         
         this.client.on('interactionCreate', async interaction => {
-            // Only handle slash commands from our guild
-            if (!interaction.isCommand() || interaction.guildId !== config.discord.guildId) return;
-
-            // Simple command handling
+            if (!interaction.isCommand() || !interaction.guildId) return;
+            
             try {
-                const command = interaction.commandName;
-                console.log(`[DEBUG] Received command: ${command} from ${interaction.user.tag}`);
+                const commandName = interaction.commandName;
+                console.log(`[DEBUG] Received command: ${commandName}`);
 
-                // Add debug logging for command handling
-                console.log(`[DEBUG] Processing command with options:`, interaction.options?._hoistedOptions);
-
-                switch (command) {
+                switch (commandName) {
                     case 'monitor':
                         if (!interaction.replied) {
                             await this.handleMonitorCommand(interaction).catch(err => {
                                 console.error('[ERROR] Monitor command failed:', err);
+                                throw err;
+                            });
+                        }
+                        break;
+                    case 'vipmonitor':
+                        if (!interaction.replied) {
+                            await this.handleVipMonitorCommand(interaction).catch(err => {
+                                console.error('[ERROR] VIP monitor command failed:', err);
                                 throw err;
                             });
                         }
@@ -641,30 +644,6 @@ class TwitterMonitorBot {
                         if (!interaction.replied) {
                             await this.handleListCommand(interaction).catch(err => {
                                 console.error('[ERROR] List command failed:', err);
-                                throw err;
-                            });
-                        }
-                        break;
-                    case 'test':
-                        if (!interaction.replied) {
-                            await this.testNotifications(interaction).catch(err => {
-                                console.error('[ERROR] Test command failed:', err);
-                                throw err;
-                            });
-                        }
-                        break;
-                    case 'help':
-                        if (!interaction.replied) {
-                            await this.handleHelpCommand(interaction).catch(err => {
-                                console.error('[ERROR] Help command failed:', err);
-                                throw err;
-                            });
-                        }
-                        break;
-                    case 'vipmonitor':
-                        if (!interaction.replied) {
-                            await this.handleVipMonitorCommand(interaction).catch(err => {
-                                console.error('[ERROR] VIP monitor command failed:', err);
                                 throw err;
                             });
                         }
@@ -765,34 +744,42 @@ class TwitterMonitorBot {
                             });
                         }
                         break;
+                    case 'test':
+                        if (!interaction.replied) {
+                            await this.testNotifications(interaction).catch(err => {
+                                console.error('[ERROR] Test command failed:', err);
+                                throw err;
+                            });
+                        }
+                        break;
+                    case 'help':
+                        if (!interaction.replied) {
+                            await this.handleHelpCommand(interaction).catch(err => {
+                                console.error('[ERROR] Help command failed:', err);
+                                throw err;
+                            });
+                        }
+                        break;
                     default:
                         if (!interaction.replied) {
-                            console.log(`[DEBUG] Unknown command received: ${command}`);
-                            await interaction.reply({ 
-                                content: 'Unknown command. Use `/help` to see available commands.',
-                                ephemeral: true 
+                            await interaction.reply({
+                                content: '❌ Unknown command',
+                                ephemeral: true
                             });
                         }
                 }
             } catch (error) {
                 console.error('[ERROR] Command handling error:', error);
-                // If we haven't replied yet, send an error message
-                if (!interaction.replied && !interaction.deferred) {
-                    try {
+                if (!interaction.replied) {
                     await interaction.reply({
-                        embeds: [{
-                            title: "Error",
-                                description: `❌ Command failed to execute: ${error.message}`,
-                            color: 0xFF0000
-                            }],
-                            ephemeral: true
-                    });
-                    } catch (replyError) {
-                        console.error('[ERROR] Failed to send error reply:', replyError);
-                    }
+                        content: '❌ An error occurred while processing the command',
+                        ephemeral: true
+                    }).catch(console.error);
                 }
             }
         });
+
+        console.log('✅ Command handling setup complete');
     }
 
     async handleMonitorCommand(interaction) {
@@ -1565,224 +1552,199 @@ class TwitterMonitorBot {
 
     async registerCommands() {
         try {
-            console.log('🔄 Registering slash commands...');
+            console.log('🔄 Registering application commands...');
             
             const commands = [
                 {
                     name: 'monitor',
-                    description: 'Start monitoring a Twitter account',
-                    options: [
-                        {
-                            name: 'twitter_id',
-                            description: 'Twitter username to monitor',
-                            type: 3,
-                            required: true
-                        },
-                        {
-                            name: 'type',
-                            description: 'Type of monitoring',
-                            type: 3,
-                            required: true,
-                            choices: [
-                                { name: 'Tweets', value: 'tweet' },
-                                { name: 'Solana Addresses', value: 'solana' }
-                            ]
-                        }
-                    ]
+                    description: 'Monitor a Twitter account for tweets',
+                    options: [{
+                        name: 'twitter_id',
+                        description: 'Twitter username to monitor',
+                        type: ApplicationCommandOptionType.String,
+                        required: true
+                    }]
+                },
+                {
+                    name: 'vipmonitor',
+                    description: 'Monitor a VIP Twitter account',
+                    options: [{
+                        name: 'twitter_id',
+                        description: 'Twitter username to monitor as VIP',
+                        type: ApplicationCommandOptionType.String,
+                        required: true
+                    }]
                 },
                 {
                     name: 'stopm',
                     description: 'Stop monitoring a Twitter account',
-                    options: [
-                        {
-                            name: 'twitter_id',
-                            description: 'Twitter username to stop monitoring',
-                            type: 3,
-                            required: true
-                        }
-                    ]
+                    options: [{
+                        name: 'twitter_id',
+                        description: 'Twitter username to stop monitoring',
+                        type: ApplicationCommandOptionType.String,
+                        required: true
+                    }]
                 },
                 {
                     name: 'list',
-                    description: 'List all monitored accounts and wallets'
+                    description: 'List all monitored accounts'
                 },
                 {
-                    name: 'test',
-                    description: 'Test notifications in all channels'
+                    name: 'trackwallet',
+                    description: 'Track a Solana wallet',
+                    options: [{
+                        name: 'address',
+                        description: 'Solana wallet address to track',
+                        type: ApplicationCommandOptionType.String,
+                        required: true
+                    }]
                 },
                 {
-                    name: 'help',
-                    description: 'Show available commands and usage'
-                },
-                {
-                    name: 'vipmonitor',
-                    description: 'Start monitoring a VIP Twitter account',
-                    options: [
-                        {
-                            name: 'twitter_id',
-                            description: 'Twitter username to monitor as VIP',
-                            type: 3,
-                            required: true
-                        }
-                    ]
-                },
-                {
-            name: 'trackwallet',
-            description: 'Track a Solana wallet',
-            options: [
-                {
-                    name: 'name',
-                    description: 'Name to identify this wallet',
-                    type: 3,
-                    required: true
-                },
-                {
-                    name: 'wallet',
-                    description: 'Solana wallet address to track',
-                    type: 3,
-                    required: true
-                }
-            ]
-                },
-                {
-            name: 'stopwallet',
-            description: 'Stop tracking a wallet',
-            options: [
-                {
-                    name: 'wallet',
-                    description: 'Solana wallet address to stop tracking',
-                    type: 3,
-                    required: true
-                }
-            ]
+                    name: 'stopwallet',
+                    description: 'Stop tracking a Solana wallet',
+                    options: [{
+                        name: 'address',
+                        description: 'Solana wallet address to stop tracking',
+                        type: ApplicationCommandOptionType.String,
+                        required: true
+                    }]
                 },
                 {
                     name: 'trending',
-                    description: 'Show trending tokens'
+                    description: 'Get trending tokens',
+                    options: [{
+                        name: 'timeframe',
+                        description: 'Timeframe for trending data',
+                        type: ApplicationCommandOptionType.String,
+                        required: true,
+                        choices: [
+                            { name: '1h', value: '1h' },
+                            { name: '6h', value: '6h' },
+                            { name: '24h', value: '24h' }
+                        ]
+                    }]
                 },
                 {
                     name: 'gainers',
-                    description: 'Show top gainers',
-                    options: [
-                        {
-                            name: 'timeframe',
-                            description: 'Timeframe for gains',
-                            type: 3,
-                            required: false,
-                            choices: [
-                                { name: '1 Hour', value: '1h' },
-                                { name: '24 Hours', value: '24h' },
-                                { name: '7 Days', value: '7d' }
-                            ]
-                        }
-                    ]
+                    description: 'Get top gainers',
+                    options: [{
+                        name: 'timeframe',
+                        description: 'Timeframe for gainers data',
+                        type: ApplicationCommandOptionType.String,
+                        required: true,
+                        choices: [
+                            { name: '1h', value: '1h' },
+                            { name: '6h', value: '6h' },
+                            { name: '24h', value: '24h' }
+                        ]
+                    }]
                 },
                 {
                     name: 'losers',
-                    description: 'Show top losers',
-                    options: [
-                        {
-                            name: 'timeframe',
-                            description: 'Timeframe for losses',
-                            type: 3,
-                            required: false,
-                            choices: [
-                                { name: '1 Hour', value: '1h' },
-                                { name: '24 Hours', value: '24h' },
-                                { name: '7 Days', value: '7d' }
-                            ]
-                        }
-                    ]
+                    description: 'Get top losers',
+                    options: [{
+                        name: 'timeframe',
+                        description: 'Timeframe for losers data',
+                        type: ApplicationCommandOptionType.String,
+                        required: true,
+                        choices: [
+                            { name: '1h', value: '1h' },
+                            { name: '6h', value: '6h' },
+                            { name: '24h', value: '24h' }
+                        ]
+                    }]
                 },
                 {
                     name: 'newpairs',
-                    description: 'Show new trading pairs',
-                    options: [
-                        {
-                            name: 'hours',
-                            description: 'Hours to look back',
-                            type: 4,
-                            required: false
-                        }
-                    ]
+                    description: 'Get new trading pairs',
+                    options: [{
+                        name: 'timeframe',
+                        description: 'Timeframe for new pairs data',
+                        type: ApplicationCommandOptionType.String,
+                        required: true,
+                        choices: [
+                            { name: '1h', value: '1h' },
+                            { name: '6h', value: '6h' },
+                            { name: '24h', value: '24h' }
+                        ]
+                    }]
                 },
                 {
                     name: 'volume',
-                    description: 'Show volume leaders',
-                    options: [
-                        {
-                            name: 'timeframe',
-                            description: 'Timeframe for volume',
-                            type: 3,
-                            required: false,
-                            choices: [
-                                { name: '1 Hour', value: '1h' },
-                                { name: '24 Hours', value: '24h' },
-                                { name: '7 Days', value: '7d' }
-                            ]
-                        }
-                    ]
+                    description: 'Get volume leaders',
+                    options: [{
+                        name: 'timeframe',
+                        description: 'Timeframe for volume data',
+                        type: ApplicationCommandOptionType.String,
+                        required: true,
+                        choices: [
+                            { name: '1h', value: '1h' },
+                            { name: '6h', value: '6h' },
+                            { name: '24h', value: '24h' }
+                        ]
+                    }]
                 },
                 {
                     name: 'security',
-                    description: 'Show token security analysis',
-                    options: [
-                        {
-                            name: 'address',
-                            description: 'Token address to analyze',
-                            type: 3,
-                            required: true
-                        }
-                    ]
+                    description: 'Get token security info',
+                    options: [{
+                        name: 'address',
+                        description: 'Token address to check',
+                        type: ApplicationCommandOptionType.String,
+                        required: true
+                    }]
                 },
                 {
                     name: 'metrics',
-                    description: 'Show detailed token metrics',
-                    options: [
-                        {
-                            name: 'address',
-                            description: 'Token address to analyze',
-                            type: 3,
-                            required: true
-                        }
-                    ]
+                    description: 'Get token metrics',
+                    options: [{
+                        name: 'address',
+                        description: 'Token address to check',
+                        type: ApplicationCommandOptionType.String,
+                        required: true
+                    }]
                 },
                 {
                     name: 'holders',
-                    description: 'Show token holder information',
-                    options: [
-                        {
-                            name: 'address',
-                            description: 'Token address to analyze',
-                            type: 3,
-                            required: true
-                        }
-                    ]
+                    description: 'Get token holder info',
+                    options: [{
+                        name: 'address',
+                        description: 'Token address to check',
+                        type: ApplicationCommandOptionType.String,
+                        required: true
+                    }]
                 },
                 {
                     name: 'smsalert',
-                    description: 'Register for SMS alerts',
-                    options: [
-                        {
-                            name: 'phone',
-                            description: 'Phone number (international format)',
-                            type: 3,
-                            required: true
-                        }
-                    ]
+                    description: 'Subscribe to SMS alerts',
+                    options: [{
+                        name: 'phone',
+                        description: 'Phone number (E.164 format)',
+                        type: ApplicationCommandOptionType.String,
+                        required: true
+                    }]
                 },
                 {
                     name: 'stopsms',
                     description: 'Unsubscribe from SMS alerts'
+                },
+                {
+                    name: 'test',
+                    description: 'Test notifications'
+                },
+                {
+                    name: 'help',
+                    description: 'Show help information'
                 }
             ];
 
-            // Register all commands
-            for (const command of commands) {
-                await this.client.application?.commands.create(command);
+            // Register commands with Discord
+            if (!this.state.guild) {
+                throw new Error('Guild not found during command registration');
             }
 
-            console.log('✅ Slash commands registered successfully');
+            await this.state.guild.commands.set(commands);
+            console.log('✅ Application commands registered successfully');
         } catch (error) {
             console.error('❌ Error registering commands:', error);
             throw error;
