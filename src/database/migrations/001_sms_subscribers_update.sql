@@ -9,14 +9,16 @@ CREATE TABLE IF NOT EXISTS migrations (
 BEGIN TRANSACTION;
 
 -- Check if migration has already been executed
-SELECT CASE 
-    WHEN EXISTS (SELECT 1 FROM migrations WHERE name = '001_sms_subscribers_update.sql')
-    THEN RAISE(IGNORE)
-    ELSE (
-        -- Insert migration record
-        INSERT INTO migrations (name) VALUES ('001_sms_subscribers_update.sql')
-    )
-END;
+INSERT OR IGNORE INTO migrations (name) VALUES ('001_sms_subscribers_update');
+
+-- Only proceed if the migration was just inserted
+CREATE TEMPORARY TABLE IF NOT EXISTS _tmp_migration_check AS
+SELECT changes() as changes;
+
+-- Continue with migration only if it was just inserted
+INSERT OR REPLACE INTO migrations (name)
+SELECT '001_sms_subscribers_update'
+WHERE (SELECT changes FROM _tmp_migration_check) > 0;
 
 -- Backup existing SMS subscribers table if it exists
 CREATE TABLE IF NOT EXISTS sms_subscribers_backup AS 
@@ -54,5 +56,6 @@ CREATE INDEX idx_sms_subscribers_last_notification ON sms_subscribers(last_notif
 
 -- Drop backup table if it exists
 DROP TABLE IF EXISTS sms_subscribers_backup;
+DROP TABLE IF EXISTS _tmp_migration_check;
 
 COMMIT; 
