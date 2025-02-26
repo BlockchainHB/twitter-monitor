@@ -64,6 +64,10 @@ class TwitterMonitorBot {
         try {
             console.log('🚀 Initializing TwitterMonitorBot...');
             
+            // Login to Discord first
+            await this.client.login(this.config.discord.token);
+            console.log('✅ Logged in to Discord');
+            
             // Set up command handling
             this.setupCommandHandling();
 
@@ -77,8 +81,8 @@ class TwitterMonitorBot {
             }
 
             console.log('✅ Bot initialization complete');
-                return true;
-            } catch (error) {
+            return true;
+        } catch (error) {
             console.error('❌ Error during initialization:', error);
             throw error;
         }
