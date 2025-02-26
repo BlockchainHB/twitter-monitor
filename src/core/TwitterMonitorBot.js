@@ -116,6 +116,59 @@ class TwitterMonitorBot {
         }
     }
 
+    async runMigrations() {
+        console.log('Running database migrations...');
+        const fs = require('fs').promises;
+        const path = require('path');
+
+        try {
+            // Get migration files
+            const migrationsDir = path.join(__dirname, '../database/migrations');
+            const files = await fs.readdir(migrationsDir);
+            const migrationFiles = files
+                .filter(f => f.endsWith('.sql'))
+                .sort(); // Ensure migrations run in order
+
+            console.log(`Found ${migrationFiles.length} migration files`);
+
+            // Run each migration in a transaction
+            for (const file of migrationFiles) {
+                console.log(`Processing migration: ${file}`);
+                
+                // Read migration file
+                const migrationPath = path.join(migrationsDir, file);
+                const sql = await fs.readFile(migrationPath, 'utf8');
+
+                // Run migration in a transaction
+                await this.dbRun('BEGIN TRANSACTION');
+                try {
+                    // Split migration into statements
+                    const statements = sql
+                        .split(';')
+                        .map(s => s.trim())
+                        .filter(s => s.length > 0);
+
+                    // Execute each statement
+                    for (const statement of statements) {
+                        await this.dbRun(statement);
+                    }
+
+                    await this.dbRun('COMMIT');
+                    console.log(`✅ Migration ${file} completed successfully`);
+                } catch (error) {
+                    await this.dbRun('ROLLBACK');
+                    console.error(`❌ Error in migration ${file}:`, error);
+                    throw error;
+                }
+            }
+
+            console.log('✅ All migrations completed successfully');
+        } catch (error) {
+            console.error('❌ Error running migrations:', error);
+            throw error;
+        }
+    }
+
     // Helper method to promisify db.run
     async dbRun(sql, params = []) {
         return new Promise((resolve, reject) => {
