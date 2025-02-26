@@ -1,7 +1,6 @@
 require('dotenv').config({
     path: process.env.NODE_ENV === 'test' ? '.env.test' : '.env'
 });
-const path = require('path');
 
 // Configuration
 const config = {
@@ -49,38 +48,33 @@ const config = {
         clientId: process.env.DISCORD_CLIENT_ID || '',
         guildId: process.env.DISCORD_GUILD_ID || '',
         channels: {
-            tweets: process.env.TWEETS_CHANNEL_ID || '',
-            solana: process.env.SOLANA_CHANNEL_ID || '',
-            vip: process.env.VIP_CHANNEL_ID || '',
-            wallets: process.env.WALLETS_CHANNEL_ID || ''
+            tweets: process.env.DISCORD_TWEETS_CHANNEL_ID || '',
+            solana: process.env.DISCORD_SOLANA_CHANNEL_ID || '',
+            vip: process.env.DISCORD_VIP_CHANNEL_ID || '',
+            wallets: process.env.DISCORD_WALLETS_CHANNEL_ID || ''
         }
     },
-    helius: {
-        apiKey: process.env.HELIUS_API_KEY || '',
-        webhookUrl: process.env.HELIUS_WEBHOOK_URL || '',
-        minSwapValue: 100, // Minimum USD value for Discord notifications
-        minSmsSwapValue: 1000, // Minimum USD value for SMS notifications
-        webhook: {
-            retryAttempts: 3,
-            retryDelay: 1000,
-            timeoutMs: 5000
-        }
+    monitoring: {
+        interval: parseInt(process.env.MONITORING_INTERVAL_MS) || 60000,
+        maxAccountsPerBatch: parseInt(process.env.MAX_ACCOUNTS_PER_BATCH) || 25,
+        maxTweetsPerAccount: parseInt(process.env.MAX_TWEETS_PER_ACCOUNT) || 5
     },
     twilio: {
+        enabled: process.env.TWILIO_ENABLED === 'true',
         accountSid: process.env.TWILIO_ACCOUNT_SID || '',
         authToken: process.env.TWILIO_AUTH_TOKEN || '',
         phoneNumber: process.env.TWILIO_PHONE_NUMBER || ''
     },
-    database: {
-        path: process.env.NODE_ENV === 'production' 
-            ? '/app/data/twitter-monitor.db'
-            : path.join(__dirname, '../../data/twitter-monitor.db'),
-        logging: process.env.NODE_ENV === 'development'
+    helius: {
+        apiKey: process.env.HELIUS_API_KEY || '',
+        webhookUrl: process.env.HELIUS_WEBHOOK_URL || '',
+        minSwapValue: parseFloat(process.env.HELIUS_MIN_SWAP_VALUE) || 100,
+        minSmsSwapValue: parseFloat(process.env.HELIUS_MIN_SMS_SWAP_VALUE) || 1000
     },
-    monitoring: {
-        interval: process.env.NODE_ENV === 'development' ? 15000 : parseInt(process.env.MONITORING_INTERVAL, 10) || 60000,
-        excludeRetweets: true
-    }
+    birdeye: {
+        apiKey: process.env.BIRDEYE_API_KEY || ''
+    },
+    debug: process.env.DEBUG === 'true'
 };
 
 // Validate required configuration
