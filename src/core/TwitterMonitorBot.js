@@ -157,14 +157,38 @@ class TwitterMonitorBot {
             // Create data directory if it doesn't exist
             const dataDir = path.dirname(this.config.database.path);
             console.log(`Creating database directory: ${dataDir}`);
+            
             try {
-                await fs.mkdir(dataDir, { recursive: true });
-                console.log('✅ Database directory created or already exists');
-            } catch (error) {
-                if (error.code !== 'EEXIST') {
-                    console.error('❌ Error creating database directory:', error);
-                    throw error;
+                // Ensure we have write permissions
+                await fs.access(dataDir, fs.constants.W_OK).catch(async () => {
+                    console.log('Directory does not exist or not writable, attempting to create...');
+                    await fs.mkdir(dataDir, { 
+                        recursive: true, 
+                        mode: 0o777 // Full permissions
+                    });
+                });
+                
+                // Double check we can write to the directory
+                await fs.access(dataDir, fs.constants.W_OK);
+                console.log('✅ Database directory is writable');
+                
+                // Ensure the database file is writable if it exists
+                try {
+                    await fs.access(this.config.database.path, fs.constants.W_OK);
+                    console.log('✅ Existing database file is writable');
+                } catch (error) {
+                    if (error.code === 'ENOENT') {
+                        console.log('Database file does not exist yet, will be created');
+                    } else {
+                        console.log('Attempting to set database file permissions...');
+                        await fs.chmod(this.config.database.path, 0o666).catch(() => {
+                            console.log('Could not set database file permissions (might not exist yet)');
+                        });
+                    }
                 }
+            } catch (error) {
+                console.error('❌ Error setting up database directory:', error);
+                throw error;
             }
             
             // Close existing connection if any
@@ -177,17 +201,33 @@ class TwitterMonitorBot {
                 });
             }
             
-            // Connect to database
+            // Connect to database with retries
             console.log(`Connecting to database at: ${this.config.database.path}`);
-            this.db = new sqlite3.Database(this.config.database.path, 
-                sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE,
-                (err) => {
-                    if (err) {
-                        console.error('❌ Database connection error:', err);
-                        throw err;
+            let retries = 3;
+            while (retries > 0) {
+                try {
+                    this.db = await new Promise((resolve, reject) => {
+                        const db = new sqlite3.Database(
+                            this.config.database.path, 
+                            sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE,
+                            (err) => {
+                                if (err) reject(err);
+                                else resolve(db);
+                            }
+                        );
+                    });
+                    console.log('✅ Database connection established');
+                    break;
+                } catch (error) {
+                    retries--;
+                    if (retries === 0) {
+                        console.error('❌ Failed to connect to database after retries:', error);
+                        throw error;
                     }
+                    console.log(`Retrying database connection... (${retries} attempts left)`);
+                    await new Promise(resolve => setTimeout(resolve, 1000));
                 }
-            );
+            }
             
             // Set pragmas for better performance
             await this.dbRun('PRAGMA journal_mode = WAL');
