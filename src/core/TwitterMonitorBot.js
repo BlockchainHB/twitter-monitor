@@ -118,6 +118,16 @@ class TwitterMonitorBot {
             // Set up command handling
             this.setupCommandHandling();
             
+            // Load wallets from config file
+            try {
+                console.log('🔄 Loading wallets from config file...');
+                await this.loadWalletsFromConfig();
+                console.log('✅ Wallets loaded from config');
+            } catch (error) {
+                console.error('⚠️ Error loading wallets from config:', error);
+                // Continue setup - we can still work with existing wallets in DB
+            }
+            
             // Sync wallets with Helius
             try {
                 console.log('🔄 Syncing wallets with Helius...');
@@ -195,6 +205,17 @@ class TwitterMonitorBot {
             } catch (error) {
                 console.error('❌ Error executing schema:', error);
                 await this.dbRun('ROLLBACK');
+                throw error;
+            }
+
+            // Run migrations
+            try {
+                console.log('🔄 Running database migrations...');
+                const { runMigrations } = require('../database/runMigrations');
+                await runMigrations();
+                console.log('✅ Migrations completed successfully');
+            } catch (error) {
+                console.error('❌ Error running migrations:', error);
                 throw error;
             }
 
@@ -2295,7 +2316,15 @@ class TwitterMonitorBot {
             await interaction.deferReply({ ephemeral: true });
             const phone = interaction.options.getString('phone');
             
-            // Basic phone number validation
+            // Validate Twilio configuration
+            if (!this.config.twilio.accountSid || !this.config.twilio.authToken || !this.config.twilio.phoneNumber) {
+                return await interaction.editReply({
+                    content: '❌ SMS notifications are not configured on this bot instance.',
+                    ephemeral: true
+                });
+            }
+
+            // Enhanced phone number validation
             if (!phone.match(/^\+[1-9]\d{1,14}$/)) {
                 return await interaction.editReply({
                     content: '❌ Invalid phone number format. Please use international format (e.g., +1234567890)',
@@ -2304,19 +2333,76 @@ class TwitterMonitorBot {
             }
 
             try {
+                // Check if user already has a different phone number registered
+                const existingUser = await this.dbGet(
+                    'SELECT phone_number FROM sms_subscribers WHERE discord_user_id = ?',
+                    [interaction.user.id]
+                );
+
+                if (existingUser && existingUser.phone_number !== phone) {
+                    // Delete old registration if phone number is different
+                    await this.dbRun(
+                        'DELETE FROM sms_subscribers WHERE discord_user_id = ?',
+                        [interaction.user.id]
+                    );
+                }
+
+                // Check if phone is registered to another user
+                const existingPhone = await this.dbGet(
+                    'SELECT discord_user_id FROM sms_subscribers WHERE phone_number = ? AND discord_user_id != ?',
+                    [phone, interaction.user.id]
+                );
+
+                if (existingPhone) {
+                    return await interaction.editReply({
+                        content: '❌ This phone number is already registered to another user.',
+                        ephemeral: true
+                    });
+                }
+
+                // Verify phone number with Twilio first
+                const lookup = await this.twilioClient.lookups.v2.phoneNumbers(phone).fetch();
+                if (!lookup.valid) {
+                    return await interaction.editReply({
+                        content: '❌ Invalid phone number. Please check the number and try again.',
+                        ephemeral: true
+                    });
+                }
+
+                // Send test message to verify delivery
+                const testResult = await this.sendSMSAlert(
+                    'Welcome to Twitter Monitor Bot! This is a test message to verify your phone number. Reply STOP to unsubscribe.',
+                    phone,
+                    interaction.user.id
+                );
+
+                if (!testResult) {
+                    return await interaction.editReply({
+                        content: '❌ Failed to send test message to your phone. Please verify the number and try again.',
+                        ephemeral: true
+                    });
+                }
+
+                // Save to database using discord_user_id as primary key
                 await this.dbRun(
-                    'INSERT OR REPLACE INTO sms_subscribers (discord_user_id, phone_number) VALUES (?, ?)',
-                    [interaction.user.id, phone]
+                    'INSERT OR REPLACE INTO sms_subscribers (discord_user_id, phone_number, created_at, last_notification) VALUES (?, ?, ?, ?)',
+                    [interaction.user.id, phone, Math.floor(Date.now() / 1000), Math.floor(Date.now() / 1000)]
                 );
 
                 return await interaction.editReply({
-                    content: '✅ Successfully registered for SMS notifications!',
+                    content: '✅ Successfully registered for SMS notifications! A test message has been sent to your phone.',
                     ephemeral: true
                 });
             } catch (error) {
-                console.error('Database error:', error);
+                console.error('SMS registration error:', error);
+                if (error.code === 60200) { // Invalid phone number
+                    return await interaction.editReply({
+                        content: '❌ Invalid phone number. Please check the number and try again.',
+                        ephemeral: true
+                    });
+                }
                 return await interaction.editReply({
-                    content: '❌ Failed to register phone number. Please try again.',
+                    content: '❌ Failed to register phone number. Please try again later.',
                     ephemeral: true
                 });
             }
@@ -2333,6 +2419,70 @@ class TwitterMonitorBot {
                     ephemeral: true
                 });
             }
+        }
+    }
+
+    async sendSMSAlert(message, phone, discord_user_id = null) {
+        try {
+            console.log(`[DEBUG] Sending SMS to ${this.maskPhoneNumber(phone)}`);
+            
+            // Validate Twilio configuration
+            if (!this.config.twilio.accountSid || !this.config.twilio.authToken || !this.config.twilio.phoneNumber) {
+                throw new Error('Missing Twilio configuration');
+            }
+
+            // Check rate limits (one message per minute per user)
+            let subscriber;
+            if (discord_user_id) {
+                subscriber = await this.dbGet(
+                    'SELECT last_notification FROM sms_subscribers WHERE discord_user_id = ?',
+                    [discord_user_id]
+                );
+            } else {
+                subscriber = await this.dbGet(
+                    'SELECT last_notification FROM sms_subscribers WHERE phone_number = ?',
+                    [phone]
+                );
+            }
+
+            if (subscriber && subscriber.last_notification) {
+                const timeSinceLastNotification = Math.floor(Date.now() / 1000) - subscriber.last_notification;
+                if (timeSinceLastNotification < 60) { // 1 minute cooldown
+                    console.log(`[DEBUG] Rate limit hit for ${this.maskPhoneNumber(phone)}, skipping notification`);
+                    return false;
+                }
+            }
+
+            // Send message
+            const result = await this.twilioClient.messages.create({
+                body: message,
+                from: this.config.twilio.phoneNumber,
+                to: phone
+            });
+
+            // Update last notification time using discord_user_id if available
+            if (discord_user_id) {
+                await this.dbRun(
+                    'UPDATE sms_subscribers SET last_notification = ? WHERE discord_user_id = ?',
+                    [Math.floor(Date.now() / 1000), discord_user_id]
+                );
+            } else {
+                await this.dbRun(
+                    'UPDATE sms_subscribers SET last_notification = ? WHERE phone_number = ?',
+                    [Math.floor(Date.now() / 1000), phone]
+                );
+            }
+
+            console.log(`[DEBUG] SMS sent successfully to ${this.maskPhoneNumber(phone)}, SID: ${result.sid}`);
+            return true;
+        } catch (error) {
+            console.error(`[ERROR] Failed to send SMS to ${this.maskPhoneNumber(phone)}:`, {
+                error: error.message,
+                code: error.code,
+                status: error.status,
+                moreInfo: error.moreInfo
+            });
+            return false;
         }
     }
 
@@ -2356,45 +2506,6 @@ class TwitterMonitorBot {
                 ephemeral: true
             });
         }
-    }
-
-    async sendSMSAlert(message, phone) {
-        try {
-            console.log(`[DEBUG] Sending SMS to ${this.maskPhoneNumber(phone)}`);
-            console.log(`[DEBUG] Using Twilio config:`, {
-                accountSid: this.maskString(process.env.TWILIO_ACCOUNT_SID || ''),
-                fromNumber: process.env.TWILIO_PHONE_NUMBER || '',
-                messageLength: message.length
-            });
-
-            if (!process.env.TWILIO_ACCOUNT_SID || !process.env.TWILIO_AUTH_TOKEN || !process.env.TWILIO_PHONE_NUMBER) {
-                throw new Error('Missing Twilio configuration in environment variables');
-            }
-
-            const result = await this.twilioClient.messages.create({
-                body: message,
-                from: process.env.TWILIO_PHONE_NUMBER,
-                to: phone
-            });
-
-            console.log(`[DEBUG] SMS sent successfully to ${this.maskPhoneNumber(phone)}, SID: ${result.sid}`);
-            return true;
-        } catch (error) {
-            console.error(`[ERROR] Failed to send SMS to ${this.maskPhoneNumber(phone)}:`, {
-                error: error.message,
-                code: error.code,
-                status: error.status,
-                moreInfo: error.moreInfo
-            });
-            return false;
-        }
-    }
-
-    // Helper to mask sensitive data in logs
-    maskString(str) {
-        if (!str) return '';
-        if (str.length <= 8) return '*'.repeat(str.length);
-        return str.slice(0, 4) + '*'.repeat(str.length - 8) + str.slice(-4);
     }
 
     async shutdown() {
@@ -2707,7 +2818,7 @@ class TwitterMonitorBot {
     async loadWalletsFromConfig() {
         try {
             console.log('📝 Loading wallets from configuration...');
-            const walletsPath = path.join(process.cwd(), 'wallets.json');
+            const walletsPath = path.join(process.cwd(), 'src', 'config', 'wallets.json');
             
             try {
                 const walletsData = await fs.readFile(walletsPath, 'utf8');
@@ -2752,7 +2863,7 @@ class TwitterMonitorBot {
 
             } catch (error) {
                 if (error.code === 'ENOENT') {
-                    console.log('ℹ️ No wallets.json file found - skipping wallet initialization');
+                    console.log('ℹ️ No wallets.json file found at:', walletsPath);
                     return;
                 }
                 throw error;
@@ -2760,6 +2871,7 @@ class TwitterMonitorBot {
 
         } catch (error) {
             console.error('❌ Error loading wallets from configuration:', error);
+            throw error; // Re-throw to handle in caller
         }
     }
 
