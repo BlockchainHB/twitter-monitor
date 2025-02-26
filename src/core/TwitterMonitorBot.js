@@ -2181,10 +2181,8 @@ class TwitterMonitorBot {
                 }
             ];
 
-            // Register all commands
-            for (const command of commands) {
-                await this.client.application?.commands.create(command);
-            }
+            // Register all commands in bulk
+            await this.client.application?.commands.set(commands);
 
             console.log('✅ Slash commands registered successfully');
         } catch (error) {
