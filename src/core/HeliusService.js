@@ -16,6 +16,10 @@ class HeliusRateLimitManager extends RateLimitManager {
                 'helius/webhooks/delete': {
                     requestsPerWindow: 10,
                     windowSizeMinutes: 1
+                },
+                'helius/webhooks/get': {
+                    requestsPerWindow: 30,
+                    windowSizeMinutes: 1
                 }
             },
             defaultLimit: {
@@ -101,6 +105,22 @@ class HeliusService {
 
             const webhookId = response.webhookID;
             console.log(`✅ Created webhook with ID: ${webhookId}`);
+
+            // Verify webhook was created correctly
+            console.log('🔍 Verifying webhook configuration...');
+            const webhookDetails = await this.getWebhook(webhookId);
+            
+            if (!webhookDetails || webhookDetails.webhookURL !== webhookUrl) {
+                throw new Error('Webhook verification failed: URL mismatch');
+            }
+
+            if (!webhookDetails.accountAddresses || 
+                !Array.isArray(webhookDetails.accountAddresses) || 
+                webhookDetails.accountAddresses.length !== accountAddresses.length) {
+                throw new Error('Webhook verification failed: Account addresses mismatch');
+            }
+
+            console.log('✅ Webhook verification successful');
 
             // Store webhook info
             await this.db.run(
@@ -224,6 +244,38 @@ class HeliusService {
         } catch (error) {
             console.error('[ERROR] Failed to parse swap transaction:', error.message);
             return null;
+        }
+    }
+
+    // Get webhook details
+    async getWebhook(webhookId) {
+        if (!webhookId) {
+            throw new Error('Webhook ID is required');
+        }
+
+        try {
+            const response = await this.rateLimitManager.scheduleRequest(
+                async () => {
+                    const result = await axios.get(
+                        `${this.baseUrl}/webhooks/${webhookId}?api-key=${this.apiKey}`
+                    );
+                    return result.data;
+                },
+                'helius/webhooks/get'
+            );
+
+            if (!response || !response.webhookID) {
+                throw new Error('Invalid response from Helius API: ' + JSON.stringify(response));
+            }
+
+            return response;
+        } catch (error) {
+            console.error('[ERROR] Failed to get Helius webhook details:', error.message);
+            if (error.response) {
+                console.error('Response data:', error.response.data);
+                console.error('Response status:', error.response.status);
+            }
+            throw error;
         }
     }
 }
