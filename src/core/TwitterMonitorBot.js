@@ -21,7 +21,7 @@ class TwitterMonitorBot {
         
         // Store service instances
         this.dexscreener = dependencies.services.dexscreener;
-        this.birdeyeService = dependencies.services.birdeyeService;
+        this.birdeyeService = dependencies.services.birdeye;
         this.helius = dependencies.services.helius;
         
         // Initialize state
@@ -56,7 +56,7 @@ class TwitterMonitorBot {
         if (!deps.config) console.warn('No config provided, using default');
         if (!deps.services) throw new Error('Services required');
         if (!deps.services.dexscreener) throw new Error('DexScreenerService required');
-        if (!deps.services.birdeyeService) throw new Error('BirdeyeService required');
+        if (!deps.services.birdeye) throw new Error('BirdeyeService required');
         if (!deps.services.helius) throw new Error('HeliusService required');
     }
 
