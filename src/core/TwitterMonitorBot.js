@@ -75,12 +75,16 @@ class TwitterMonitorBot {
         try {
             console.log('🚀 Initializing TwitterMonitorBot...');
             
-            // Set WAL mode for better performance
-            await this.dbRun('PRAGMA journal_mode = WAL');
-            await this.dbRun('PRAGMA synchronous = NORMAL');
-            await this.dbRun('PRAGMA temp_store = MEMORY');
-            
-            // Create migrations table if it doesn't exist
+            // First, ensure database connection is working
+            try {
+                await this.dbRun('SELECT 1');
+                console.log('✅ Database connection successful');
+            } catch (error) {
+                console.error('❌ Database connection failed:', error);
+                throw error;
+            }
+
+            // Create migrations table first
             await this.dbRun(`
                 CREATE TABLE IF NOT EXISTS migrations (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -88,27 +92,44 @@ class TwitterMonitorBot {
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             `);
-
-            // Run migrations
+            
+            // Run migrations before setting WAL mode
             await this.runMigrations();
+            
+            // Now set WAL mode and other optimizations
+            await this.dbRun('PRAGMA journal_mode = WAL');
+            await this.dbRun('PRAGMA synchronous = NORMAL');
+            await this.dbRun('PRAGMA temp_store = MEMORY');
+            await this.dbRun('PRAGMA busy_timeout = 5000');
 
-            // Get monitored accounts
+            // Verify database is properly set up
             const accounts = await this.getMonitoredAccounts();
             console.log(`📊 Found ${accounts.length} monitored accounts`);
 
-            // Set up command handling BEFORE registering commands
-            this.setupCommandHandling();
+            // Initialize Discord client first
+            if (!this.client.isReady()) {
+                await new Promise((resolve, reject) => {
+                    const timeout = setTimeout(() => {
+                        reject(new Error('Discord client connection timed out'));
+                    }, 30000);
 
-            // Only register commands if we're fully ready
-            if (this.client.isReady()) {
-                await this.registerCommands();
-            } else {
-                // Wait for ready event to register commands
-                this.client.once('ready', async () => {
-                    await this.registerCommands();
+                    this.client.once('ready', () => {
+                        clearTimeout(timeout);
+                        resolve();
+                    });
+
+                    this.client.once('error', (error) => {
+                        clearTimeout(timeout);
+                        reject(error);
+                    });
                 });
             }
 
+            // Now set up command handling
+            this.setupCommandHandling();
+            await this.registerCommands();
+
+            console.log('✅ Bot initialization complete');
             return true;
         } catch (error) {
             console.error('❌ Error during initialization:', error);
@@ -131,32 +152,30 @@ class TwitterMonitorBot {
 
             console.log(`Found ${migrationFiles.length} migration files`);
 
-            // Run each migration in a transaction
+            // Run each migration
             for (const file of migrationFiles) {
                 console.log(`Processing migration: ${file}`);
                 
-                // Read migration file
-                const migrationPath = path.join(migrationsDir, file);
-                const sql = await fs.readFile(migrationPath, 'utf8');
-
-                // Run migration in a transaction
-                await this.dbRun('BEGIN TRANSACTION');
                 try {
-                    // Split migration into statements
-                    const statements = sql
-                        .split(';')
-                        .map(s => s.trim())
-                        .filter(s => s.length > 0);
+                    // Check if migration was already applied
+                    const migrationName = path.basename(file, '.sql');
+                    const existing = await this.dbGet(
+                        'SELECT 1 FROM migrations WHERE name = ?',
+                        [migrationName]
+                    );
 
-                    // Execute each statement
-                    for (const statement of statements) {
-                        await this.dbRun(statement);
+                    if (existing) {
+                        console.log(`ℹ️ Migration ${file} already applied, skipping`);
+                        continue;
                     }
 
-                    await this.dbRun('COMMIT');
+                    // Read and execute migration
+                    const migrationPath = path.join(migrationsDir, file);
+                    const sql = await fs.readFile(migrationPath, 'utf8');
+                    await this.dbRun(sql);
+
                     console.log(`✅ Migration ${file} completed successfully`);
                 } catch (error) {
-                    await this.dbRun('ROLLBACK');
                     console.error(`❌ Error in migration ${file}:`, error);
                     throw error;
                 }
@@ -170,13 +189,31 @@ class TwitterMonitorBot {
     }
 
     // Helper method to promisify db.run
-    async dbRun(sql, params = []) {
-        return new Promise((resolve, reject) => {
-            this.state.db.run(sql, params, function(err) {
-                        if (err) reject(err);
-                else resolve(this);
+    async dbRun(sql, params = [], maxRetries = 3) {
+        let lastError;
+        for (let attempt = 0; attempt < maxRetries; attempt++) {
+            try {
+                return await new Promise((resolve, reject) => {
+                    this.state.db.run(sql, params, function(err) {
+                        if (err) {
+                            console.error(`SQL Error in dbRun (attempt ${attempt + 1}/${maxRetries}):`, err);
+                            reject(err);
+                        } else {
+                            resolve(this);
+                        }
                     });
                 });
+            } catch (error) {
+                lastError = error;
+                if (error.code === 'SQLITE_BUSY' || error.code === 'SQLITE_LOCKED') {
+                    console.log(`Database busy/locked, retrying... (attempt ${attempt + 1}/${maxRetries})`);
+                    await new Promise(resolve => setTimeout(resolve, 1000 * Math.pow(2, attempt)));
+                    continue;
+                }
+                throw error;
+            }
+        }
+        throw lastError;
     }
 
     async dbGet(sql, params = [], maxRetries = 3) {
@@ -364,106 +401,123 @@ class TwitterMonitorBot {
     async startMonitoring() {
         console.log('[DEBUG] Starting monitoring interval...');
         
+        // Clear existing interval if any
         if (this.state.monitoringInterval) {
             clearInterval(this.state.monitoringInterval);
+            this.state.monitoringInterval = null;
+            // Give any pending operations a moment to complete
+            await new Promise(resolve => setTimeout(resolve, 1000));
         }
 
+        // Start new monitoring interval
         this.state.monitoringInterval = setInterval(async () => {
             try {
-                console.log('\n[DEBUG] Running monitoring check...');
-                const accounts = await this.getMonitoredAccounts();
-                if (accounts.length === 0) {
-                    console.log('[DEBUG] No accounts to monitor');
+                // Check if we're already running a check
+                if (this.state.isChecking) {
+                    console.log('[DEBUG] Previous check still running, skipping...');
                     return;
                 }
 
-                console.log(`[DEBUG] Found ${accounts.length} accounts to monitor`);
-                
-                // Build query for all accounts
-                const query = accounts.map(a => `from:${a.username}`).join(' OR ');
-                console.log(`[DEBUG] Query: ${query}`);
+                this.state.isChecking = true;
+                console.log('\n[DEBUG] Running monitoring check...');
 
-                // Get last tweet IDs for all accounts
-                console.log('[DEBUG] Fetching last tweet IDs for batch search...');
-                const accountLastTweets = await Promise.all(accounts.map(account =>
-                    this.dbGet('SELECT last_tweet_id FROM monitored_accounts WHERE twitter_id = ?', [account.twitter_id])
-                ));
+                try {
+                    const accounts = await this.getMonitoredAccounts();
+                    if (accounts.length === 0) {
+                        console.log('[DEBUG] No accounts to monitor');
+                        return;
+                    }
 
-                // Find the most recent last_tweet_id to use as since_id
-                const validLastTweets = accountLastTweets.filter(lt => lt?.last_tweet_id);
-                const params = {
-                    'query': `(${query}) -is:retweet`,
-                    'tweet.fields': [
-                        'author_id',
-                        'created_at',
-                        'text',
-                        'attachments',
-                        'referenced_tweets',
-                        'in_reply_to_user_id',
-                        'conversation_id'
-                    ],
-                    'expansions': [
-                        'attachments.media_keys',
-                        'author_id',
-                        'referenced_tweets.id',
-                        'referenced_tweets.id.author_id'
-                    ],
-                    'media.fields': ['url', 'preview_image_url', 'type'],
-                    'user.fields': ['profile_image_url', 'name', 'username'],
-                    'max_results': 100,
-                    'sort_order': 'recency'
-                };
+                    console.log(`[DEBUG] Found ${accounts.length} accounts to monitor`);
+                    
+                    // Build query for all accounts
+                    const query = accounts.map(a => `from:${a.username}`).join(' OR ');
+                    console.log(`[DEBUG] Query: ${query}`);
 
-                if (validLastTweets.length > 0) {
-                    // Sort by tweet ID (which are chronological) to get the most recent one
-                    const mostRecentTweetId = validLastTweets
-                        .map(t => t.last_tweet_id)
-                        .sort()
-                        .pop();
-                    params.since_id = mostRecentTweetId;
-                    console.log(`[DEBUG] Using since_id: ${mostRecentTweetId}`);
-                } else {
-                    // If this is the first check, request minimum required by API but we'll limit processing
-                    params.max_results = 10;
-                    console.log('[DEBUG] First check for account(s), requesting 10 tweets but will process only 5 most recent');
+                    // Get last tweet IDs for all accounts
+                    console.log('[DEBUG] Fetching last tweet IDs for batch search...');
+                    const accountLastTweets = await Promise.all(accounts.map(account =>
+                        this.dbGet('SELECT last_tweet_id FROM monitored_accounts WHERE twitter_id = ?', [account.twitter_id])
+                    ));
+
+                    // Find the most recent last_tweet_id to use as since_id
+                    const validLastTweets = accountLastTweets.filter(lt => lt?.last_tweet_id);
+                    const params = {
+                        'query': `(${query}) -is:retweet`,
+                        'tweet.fields': [
+                            'author_id',
+                            'created_at',
+                            'text',
+                            'attachments',
+                            'referenced_tweets',
+                            'in_reply_to_user_id',
+                            'conversation_id'
+                        ],
+                        'expansions': [
+                            'attachments.media_keys',
+                            'author_id',
+                            'referenced_tweets.id',
+                            'referenced_tweets.id.author_id'
+                        ],
+                        'media.fields': ['url', 'preview_image_url', 'type'],
+                        'user.fields': ['profile_image_url', 'name', 'username'],
+                        'max_results': 100,
+                        'sort_order': 'recency'
+                    };
+
+                    if (validLastTweets.length > 0) {
+                        // Sort by tweet ID (which are chronological) to get the most recent one
+                        const mostRecentTweetId = validLastTweets
+                            .map(t => t.last_tweet_id)
+                            .sort()
+                            .pop();
+                        params.since_id = mostRecentTweetId;
+                        console.log(`[DEBUG] Using since_id: ${mostRecentTweetId}`);
+                    } else {
+                        // If this is the first check, request minimum required by API but we'll limit processing
+                        params.max_results = 10;
+                        console.log('[DEBUG] First check for account(s), requesting 10 tweets but will process only 5 most recent');
+                    }
+
+                    // Make the API request
+                    console.log(`[DEBUG] Making Twitter API request with params:`, params);
+                    const response = await this.twitter.v2.search(params);
+                    console.log(`[DEBUG] Twitter API response:`, {
+                        meta: response.meta,
+                        includes: response.includes,
+                        errors: response.errors,
+                        dataLength: response.data?.length || 0
+                    });
+
+                    // Process tweets if we have any
+                    const tweets = response._realData?.data || response.data || [];
+                    if (tweets?.length) {
+                        console.log('[DEBUG] Starting batch tweet processing...');
+                        await this.batchProcessTweets(tweets, accounts, response.includes);
+                        console.log('[DEBUG] Batch tweet processing completed');
+
+                        // Group tweets by author for updating last tweet IDs
+                        const tweetsByAuthor = tweets.reduce((acc, tweet) => {
+                            if (!acc[tweet.author_id]) {
+                                acc[tweet.author_id] = [];
+                            }
+                            acc[tweet.author_id].push(tweet);
+                            return acc;
+                        }, {});
+
+                        // Update last tweet IDs in batch
+                        console.log('[DEBUG] Updating last tweet IDs in batch...');
+                        await this.updateLastTweetIds(tweetsByAuthor);
+                        console.log('[DEBUG] Last tweet IDs updated successfully');
+                    } else {
+                        console.log('[DEBUG] No new tweets to process');
+                    }
+                } finally {
+                    this.state.isChecking = false;
                 }
-
-                // Make the API request
-                console.log(`[DEBUG] Making Twitter API request with params:`, params);
-                const response = await this.twitter.v2.search(params);
-                console.log(`[DEBUG] Twitter API response:`, {
-                    meta: response.meta,
-                    includes: response.includes,
-                    errors: response.errors,
-                    dataLength: response.data?.length || 0
-                });
-
-                // Process tweets if we have any
-                const tweets = response._realData?.data || response.data || [];
-                if (tweets?.length) {
-                    console.log('[DEBUG] Starting batch tweet processing...');
-                    await this.batchProcessTweets(tweets, accounts, response.includes);
-                    console.log('[DEBUG] Batch tweet processing completed');
-
-                    // Group tweets by author for updating last tweet IDs
-                    const tweetsByAuthor = tweets.reduce((acc, tweet) => {
-                        if (!acc[tweet.author_id]) {
-                            acc[tweet.author_id] = [];
-                        }
-                        acc[tweet.author_id].push(tweet);
-                        return acc;
-                    }, {});
-
-                    // Update last tweet IDs in batch
-                    console.log('[DEBUG] Updating last tweet IDs in batch...');
-                    await this.updateLastTweetIds(tweetsByAuthor);
-                    console.log('[DEBUG] Last tweet IDs updated successfully');
-                } else {
-                    console.log('[DEBUG] No new tweets to process');
-                }
-
             } catch (error) {
                 console.error('[ERROR] Error in monitoring interval:', error);
+                this.state.isChecking = false;
             }
         }, config.monitoring.interval);
 
@@ -1898,34 +1952,33 @@ class TwitterMonitorBot {
     async shutdown() {
         try {
             // Clear monitoring interval
-            if (this.monitoringInterval) {
-                clearInterval(this.monitoringInterval);
-                this.monitoringInterval = null;
+            if (this.state.monitoringInterval) {
+                clearInterval(this.state.monitoringInterval);
+                this.state.monitoringInterval = null;
             }
 
             // Close database connection if open
-            if (this.db) {
+            if (this.state.db) {
                 try {
                     await new Promise((resolve, reject) => {
-                        this.db.close(err => {
-                            if (err && err.code !== 'SQLITE_MISUSE') {
+                        this.state.db.close(err => {
+                            if (err) {
+                                console.error('Error closing database:', err);
                                 reject(err);
                             } else {
+                                console.log('Database connection closed');
                                 resolve();
                             }
                         });
                     });
                 } catch (error) {
-                    if (error.code !== 'SQLITE_MISUSE') {
-                        throw error;
-                    }
+                    console.error('Failed to close database:', error);
                 }
-                this.db = null;
             }
 
             // Destroy Discord client
             if (this.client) {
-                await this.client.destroy();
+                this.client.destroy();
             }
 
             console.log('Bot shutdown complete');
