@@ -34,6 +34,7 @@ async function main() {
                 twitterAccessToken: process.env.TWITTER_ACCESS_TOKEN,
                 twitterAccessSecret: process.env.TWITTER_ACCESS_TOKEN_SECRET,
                 discordToken: process.env.DISCORD_BOT_TOKEN,
+                clientId: process.env.DISCORD_CLIENT_ID,
                 guildId: process.env.DISCORD_GUILD_ID,
                 tweetsChannelId: process.env.DISCORD_TWEETS_CHANNEL,
                 vipChannelId: process.env.DISCORD_VIP_CHANNEL,
