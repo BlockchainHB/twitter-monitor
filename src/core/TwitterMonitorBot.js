@@ -222,6 +222,8 @@ class TwitterMonitorBot {
                 tweets: this.config.discord.channels.tweets,
                 solana: this.config.discord.channels.solana,
                 vip: this.config.discord.channels.vip,
+            };
+            
             // Create data directory if it doesn't exist
             const dataDir = path.dirname(this.config.database.path);
             console.log(`Creating database directory: ${dataDir}`);
