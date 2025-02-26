@@ -157,7 +157,15 @@ class TwitterMonitorBot {
             // Create data directory if it doesn't exist
             const dataDir = path.dirname(this.config.database.path);
             console.log(`Creating database directory: ${dataDir}`);
-            await fs.mkdir(dataDir, { recursive: true });
+            try {
+                await fs.mkdir(dataDir, { recursive: true });
+                console.log('✅ Database directory created or already exists');
+            } catch (error) {
+                if (error.code !== 'EEXIST') {
+                    console.error('❌ Error creating database directory:', error);
+                    throw error;
+                }
+            }
             
             // Close existing connection if any
             if (this.db) {
@@ -207,18 +215,7 @@ class TwitterMonitorBot {
                 await this.dbRun('ROLLBACK');
                 throw error;
             }
-
-            // Run migrations
-            try {
-                console.log('🔄 Running database migrations...');
-                const { runMigrations } = require('../database/runMigrations');
-                await runMigrations();
-                console.log('✅ Migrations completed successfully');
-            } catch (error) {
-                console.error('❌ Error running migrations:', error);
-                throw error;
-            }
-
+            
             console.log('✅ Database initialization complete');
         } catch (error) {
             console.error('❌ Database initialization failed:', error);
