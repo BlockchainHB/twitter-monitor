@@ -12,94 +12,89 @@ class TwitterMonitorBot {
     constructor(dependencies) {
         this.validateDependencies(dependencies);
         
-        // Initialize state
-        this.state = {
-            monitoredAccounts: new Map(),
-            trackedWallets: new Map(),
-            smsSubscribers: new Map(),
-            processedTweets: new Set()
-        };
-
-        // Store dependencies
+        // Store core dependencies
         this.client = dependencies.client;
-        
-        // Initialize Twitter API with proper rate limit configuration
-        if (process.env.TWITTER_API_KEY && process.env.TWITTER_API_KEY_SECRET) {
-            this.twitter = new TwitterApi({
-                appKey: process.env.TWITTER_API_KEY,
-                appSecret: process.env.TWITTER_API_KEY_SECRET,
-                accessToken: process.env.TWITTER_ACCESS_TOKEN,
-                accessSecret: process.env.TWITTER_ACCESS_TOKEN_SECRET
-            });
-
-            // Configure Twitter rate limit manager
-            this.twitterRateLimitManager = new RateLimitManager({
-                endpoints: {
-                    'tweets/search/recent': {
-                        requestsPerWindow: 450,
-                        windowSizeMinutes: 15,
-                    },
-                    'users/by/username': {
-                        requestsPerWindow: 900,
-                        windowSizeMinutes: 15,
-                    },
-                    'users/:id/tweets': {
-                        requestsPerWindow: 1500,
-                        windowSizeMinutes: 15,
-                    }
-                },
-                defaultLimit: {
-                    requestsPerWindow: 180,
-                    windowSizeMinutes: 15
-                },
-                safetyMargin: 0.9,
-                batchConfig: {
-                    minIntervalMs: 1100,  // Minimum 1.1s between requests
-                    maxRetries: 3,
-                    retryDelayMs: 5000
-                }
-            });
-        }
-
-        // Initialize channels using environment variables
-        this.channels = {
-            tweets: process.env.DISCORD_TWEETS_CHANNEL,
-            vip: process.env.DISCORD_VIP_CHANNEL,
-            wallets: process.env.DISCORD_WALLETS_CHANNEL,
-            solana: process.env.DISCORD_SOLANA_CHANNEL
-        };
-
-        // Twitter search configuration
-        this.searchConfig = {
-            maxResults: 100,
-            expansions: ['author_id', 'referenced_tweets.id', 'referenced_tweets.id.author_id'],
-            tweetFields: ['created_at', 'text', 'public_metrics', 'entities'],
-            userFields: ['username', 'name', 'profile_image_url']
-        };
-
-        // Store other dependencies
         this.heliusService = dependencies.heliusService;
         this.birdeyeService = dependencies.birdeyeService;
-
-        // Initialize monitoring parameters
-        this.monitoringInterval = parseInt(process.env.MONITORING_INTERVAL) || 60000;
-        this.lastSearchTime = new Map();
+        
+        // Initialize in-memory state
+        this.monitoredAccounts = new Map();
+        this.trackedWallets = new Map();
+        this.smsSubscribers = new Map();
+        this.processedTweets = new Set();
 
         // Initialize Twilio if credentials exist
         if (process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN) {
-            this.twilio = require('twilio')(
+            const twilio = require('twilio');
+            this.twilioClient = twilio(
                 process.env.TWILIO_ACCOUNT_SID,
                 process.env.TWILIO_AUTH_TOKEN
             );
-            this.twilioPhone = process.env.TWILIO_PHONE_NUMBER;
-            console.log('[DEBUG] Twilio client initialized');
+            console.debug('Twilio client initialized');
         }
+
+        // Store config
+        this.config = dependencies.config;
+        
+        // Initialize channel properties as null
+        this.tweetsChannel = null;
+        this.vipChannel = null;
+        this.walletsChannel = null;
+        this.solanaChannel = null;
     }
 
     validateDependencies(deps) {
         if (!deps.client) throw new Error('Discord client required');
         if (!deps.heliusService) throw new Error('HeliusService required');
         if (!deps.birdeyeService) throw new Error('BirdeyeService required');
+        if (!deps.config) throw new Error('Config required');
+    }
+
+    async start() {
+        try {
+            console.log('Starting Twitter Monitor Bot...');
+            
+            // Login to Discord
+            await this.client.login(this.config.discordToken);
+            console.log('✅ Logged into Discord');
+
+            // Set up commands
+            await this.setupCommands();
+            console.log('✅ Commands registered');
+
+            // Load tracked wallets from file
+            await this.loadTrackedWallets();
+            console.log('✅ Tracked wallets loaded');
+
+            // Test channel access
+            await this.testChannelAccess();
+            console.log('✅ Channel access verified');
+
+            // Start monitoring systems
+            await this.startMonitoring();
+            console.log('✅ Monitoring systems started');
+
+            console.log('🤖 Bot is ready!');
+        } catch (error) {
+            console.error('Failed to start bot:', error);
+            throw error;
+        }
+    }
+
+    async testChannelAccess() {
+        try {
+            const guild = await this.client.guilds.fetch(this.config.guildId);
+            
+            this.tweetsChannel = await guild.channels.fetch(this.config.tweetsChannelId);
+            this.vipChannel = await guild.channels.fetch(this.config.vipChannelId);
+            this.walletsChannel = await guild.channels.fetch(this.config.walletsChannelId);
+            this.solanaChannel = await guild.channels.fetch(this.config.solanaChannelId);
+            
+            console.log('All channels accessed successfully');
+        } catch (error) {
+            console.error('Failed to access channels:', error);
+            throw new Error('Channel access failed - please check channel IDs and bot permissions');
+        }
     }
 
     async initialize() {
@@ -142,53 +137,6 @@ class TwitterMonitorBot {
         }
     }
 
-    async testChannelAccess() {
-        try {
-            console.log('[DEBUG] Validating channel access...');
-
-            // Wait for client to be ready
-            if (!this.client.isReady()) {
-                console.log('[DEBUG] Waiting for Discord client to be ready...');
-                await new Promise(resolve => this.client.once('ready', resolve));
-            }
-
-            // Get the guild
-            const guildId = process.env.DISCORD_GUILD_ID;
-            if (!guildId) throw new Error('DISCORD_GUILD_ID not set in environment');
-
-            const guild = await this.client.guilds.fetch(guildId);
-            console.log('[DEBUG] Guild fetched successfully');
-
-            // Validate each channel
-            const channelConfigs = {
-                tweets: process.env.DISCORD_TWEETS_CHANNEL,
-                vip: process.env.DISCORD_VIP_CHANNEL,
-                wallets: process.env.DISCORD_WALLETS_CHANNEL,
-                solana: process.env.DISCORD_SOLANA_CHANNEL
-            };
-
-            for (const [key, channelId] of Object.entries(channelConfigs)) {
-                if (!channelId) {
-                    console.warn(`[WARN] ${key.toUpperCase()}_CHANNEL not set in environment`);
-                        continue;
-                    }
-                    
-                console.log(`[DEBUG] Setting up ${key} channel with ID: ${channelId}`);
-                const channel = await guild.channels.fetch(channelId);
-                if (!channel) {
-                    console.warn(`[WARN] Channel ${key} not found`);
-                    continue;
-                }
-                this.channels[key] = channel;
-                console.log(`[DEBUG] Found ${key} channel: ${channel.name} (${channel.id})`);
-            }
-        } catch (error) {
-            console.error('❌ Error validating channel access:', error);
-            throw error;
-        }
-    }
-
-    // Core data operations using in-memory storage
     async getMonitoredAccounts() {
         return Array.from(this.state.monitoredAccounts.values());
     }
@@ -239,7 +187,6 @@ class TwitterMonitorBot {
         }
     }
 
-    // SMS subscriber management
     async addSMSSubscriber(discordUserId, phoneNumber) {
         this.state.smsSubscribers.set(discordUserId, {
             phone: phoneNumber,
@@ -1851,35 +1798,6 @@ class TwitterMonitorBot {
         const walletCount = this.state.trackedWallets.size;
         console.log(`[DEBUG] Wallet monitoring active - ${walletCount} wallets configured`);
         console.log('[DEBUG] Webhook endpoint ready for Helius notifications');
-    }
-
-    async start() {
-        try {
-            console.log('\n🚀 Starting Twitter Monitor Bot in DEBUG mode...\n');
-            
-            await this.initialize();
-            
-            // Load tracked wallets into memory
-            console.log('[DEBUG] Starting wallet monitoring initialization...');
-            await this.loadTrackedWallets();
-            
-            // Set up webhook for wallet monitoring
-            console.log('[DEBUG] Setting up Helius webhook...');
-            await this.setupHeliusWebhook();
-            console.log('[DEBUG] Helius webhook setup complete');
-            
-            // Start monitoring loops
-            console.log('[DEBUG] Starting monitoring services...');
-            this.startMonitoring();  // For Twitter accounts
-            this.startWalletMonitoring();  // For wallet tracking
-            
-            console.log('✅ Bot initialization complete');
-            console.log('Bot initialization complete');
-            
-        } catch (error) {
-            console.error('❌ Error starting bot:', error);
-            throw error;
-        }
     }
 
     async handleTrackWalletCommand(interaction) {
