@@ -13,5 +13,8 @@
     "node-fetch": "^2.7.0",
     "twilio": "^4.23.0",
     "twitter-api-v2": "^1.16.1"
+  },
+  "engines": {
+    "node": ">=16.0.0"
   }
 }
