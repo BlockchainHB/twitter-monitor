@@ -59,7 +59,8 @@ class TwitterMonitorBot {
             console.log('✅ Logged into Discord');
 
             // Set up commands
-            await this.setupCommands();
+            await this.setupCommandHandling();
+            await this.registerCommands();
             console.log('✅ Commands registered');
 
             // Load tracked wallets from file
@@ -2014,7 +2015,6 @@ class TwitterMonitorBot {
                                     value: `${buyRatio}% (${tokenInfo.buys24h}/${tokenInfo.trades24h} trades)`,
                                     inline: true
                                 });
-                            }
                             
                             // Add unique wallet activity
                             if (tokenInfo.uniqueWallets24h) tokenFields.push({
@@ -2046,6 +2046,7 @@ class TwitterMonitorBot {
                                 wallet.discord_user_id
                             );
                         }
+                        }
                     }
 
                 } catch (txError) {
@@ -2076,30 +2077,21 @@ class TwitterMonitorBot {
                     const BATCH_SIZE = 5;
                     for (let i = 0; i < accounts.length; i += BATCH_SIZE) {
                         const batch = accounts.slice(i, i + BATCH_SIZE);
-                        await this.twitterRateLimitManager.scheduleRequest(
-                            async () => {
-                                await this.batchProcessTweets(batch);
-                            },
-                            'tweets/search/recent'
-                        );
+                        await this.batchProcessTweets(batch);
                     }
                 } catch (error) {
-                    if (error.code === 'RATE_LIMIT') {
-                        console.log('Rate limit hit, will retry on next interval');
-                        return;
+                    if (error.code === 429) {
+                        await this.handleRateLimit(error);
+                    } else {
+                        console.error('Error in monitor loop:', error);
+                        await this.handleError(error);
                     }
-                    console.error('Error in monitor loop:', error);
                 }
             };
 
-            // Initial monitoring
-            await monitorAccounts();
-
-            // Set up interval with rate limit consideration
-            this.monitoringInterval = setInterval(async () => {
-                await monitorAccounts();
-            }, parseInt(process.env.MONITORING_INTERVAL) || 60000);
-
+            // Start the monitoring interval
+            this.monitoringInterval = setInterval(monitorAccounts, this.config.monitoring.interval);
+            console.log('✅ Twitter monitoring started');
         } catch (error) {
             console.error('Failed to start monitoring:', error);
             throw error;
@@ -2120,7 +2112,7 @@ class TwitterMonitorBot {
 
                 await this.twitterRateLimitManager.scheduleRequest(
                     async () => {
-                const params = {
+                        const params = {
                             ...this.searchConfig,
                             since_id: lastTweetId
                         };
@@ -2139,11 +2131,12 @@ class TwitterMonitorBot {
                 this.lastSearchTime.set(account.id, now);
             }
         } catch (error) {
-                if (error.code === 'RATE_LIMIT') {
+            if (error.code === 'RATE_LIMIT') {
                 console.log('Rate limit hit, will retry on next interval');
-                    return;
-                }
+                return;
+            }
             console.error('Error processing tweets batch:', error);
+            throw error; // Propagate error to be handled by the monitoring loop
         }
     }
 
@@ -2178,11 +2171,11 @@ class TwitterMonitorBot {
 
     async loadTrackedWallets() {
         // Initialize wallet tracking state if not exists
-        if (!this.state.trackedWallets) {
-            this.state.trackedWallets = new Map();
+        if (!this.trackedWallets) {
+            this.trackedWallets = new Map();
         }
-        return Array.from(this.state.trackedWallets.values());
+        return Array.from(this.trackedWallets.values());
     }
-} // End of class TwitterMonitorBot
+}
 
 module.exports = TwitterMonitorBot;
