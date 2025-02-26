@@ -1,29 +1,36 @@
 const axios = require('axios');
 const RateLimitManager = require('./RateLimitManager');
+const BirdeyeService = require('./BirdeyeService');
+const path = require('path');
+const fs = require('fs').promises;
 
 class HeliusRateLimitManager extends RateLimitManager {
     constructor() {
         super({
             endpoints: {
                 'helius/webhooks/list': {
-                    requestsPerWindow: 30,
+                    requestsPerWindow: 10,
                     windowSizeMinutes: 1
                 },
                 'helius/webhooks/create': {
-                    requestsPerWindow: 10,
+                    requestsPerWindow: 5,
                     windowSizeMinutes: 1
                 },
                 'helius/webhooks/delete': {
-                    requestsPerWindow: 10,
+                    requestsPerWindow: 5,
                     windowSizeMinutes: 1
                 },
                 'helius/webhooks/get': {
-                    requestsPerWindow: 30,
+                    requestsPerWindow: 10,
+                    windowSizeMinutes: 1
+                },
+                'helius/webhooks/update': {
+                    requestsPerWindow: 5,
                     windowSizeMinutes: 1
                 }
             },
             defaultLimit: {
-                requestsPerWindow: 10,
+                requestsPerWindow: 5,
                 windowSizeMinutes: 1
             },
             safetyMargin: 0.9
@@ -32,12 +39,49 @@ class HeliusRateLimitManager extends RateLimitManager {
 }
 
 class HeliusService {
-    constructor(apiKey) {
+    constructor(apiKey, birdeyeService) {
         this.apiKey = apiKey;
         this.baseUrl = 'https://api.helius.xyz/v0';
         this.rateLimitManager = new HeliusRateLimitManager();
         this.activeWebhooks = new Map(); // In-memory storage
         this.walletNames = new Map(); // In-memory wallet name storage
+        this.birdeyeService = birdeyeService; // Use provided Birdeye service
+        this.walletsPath = path.join(__dirname, '../config/wallets.json');
+    }
+
+    // Add this new method
+    async loadWalletsFromJson() {
+        try {
+            console.log('📝 Loading wallets from JSON file...');
+            const data = await fs.readFile(this.walletsPath, 'utf8');
+            const jsonData = JSON.parse(data);
+            
+            const wallets = jsonData.wallets || [];
+            
+            if (wallets.length === 0) {
+                console.log('⚠️ No wallets found in wallets.json');
+                return;
+            }
+
+            // Initialize wallets in memory
+            wallets.forEach(wallet => {
+                if (wallet.address && wallet.name) {
+                    this.walletNames.set(wallet.address, wallet.name);
+                }
+            });
+
+            console.log(`✅ Loaded ${this.walletNames.size} wallets into memory`);
+            
+            // Log first few wallets as sample
+            console.log('Sample wallets loaded:');
+            [...this.walletNames.entries()].slice(0, 3).forEach(([address, name]) => {
+                console.log(`- ${name}: ${address}`);
+            });
+
+        } catch (error) {
+            console.error('❌ Failed to load wallets from JSON:', error);
+            throw error;
+        }
     }
 
     // Get webhook URL for a specific wallet
@@ -48,6 +92,11 @@ class HeliusService {
     // Sync wallets with Helius webhook
     async syncWallets(webhookUrl, accountAddresses) {
         try {
+            // Load initial wallets if not already loaded
+            if (this.walletNames.size === 0) {
+                await this.loadWalletsFromJson();
+            }
+            
             console.log('📡 Checking webhook configuration...');
             
             // Get existing webhooks
@@ -87,7 +136,7 @@ class HeliusService {
             const payload = {
                 webhookURL: webhookUrl,
                 accountAddresses,
-                transactionTypes: ['SWAP'],
+                transactionTypes: ['SWAP', 'TOKEN_TRANSFER'],
                 webhookType: 'enhanced'
             };
             console.log('Creating webhook with payload:', JSON.stringify(payload, null, 2));
@@ -112,14 +161,28 @@ class HeliusService {
     // Update existing webhook with new wallet addresses
     async updateWebhook(webhookId, accountAddresses) {
         try {
-            const response = await axios.put(`${this.baseUrl}/webhooks/${webhookId}?api-key=${this.apiKey}`, {
-                accountAddresses,
-                transactionTypes: ['SWAP'],
+            // Get existing webhook to preserve other settings
+            const existingWebhook = await this.getWebhook(webhookId);
+            
+            // Ensure accountAddresses is an array
+            const addresses = Array.isArray(accountAddresses) ? accountAddresses : [accountAddresses];
+            
+            const payload = {
+                webhookURL: existingWebhook.webhookURL,
+                accountAddresses: addresses,
+                transactionTypes: ['SWAP', 'TOKEN_TRANSFER'],
                 webhookType: 'enhanced'
-            });
+            };
+
+            console.log('Updating webhook with payload:', JSON.stringify(payload, null, 2));
+            
+            const response = await axios.put(`${this.baseUrl}/webhooks/${webhookId}?api-key=${this.apiKey}`, payload);
             return response.data;
         } catch (error) {
             console.error('[ERROR] Failed to update Helius webhook:', error.message);
+            if (error.response?.data) {
+                console.error('Response data:', error.response.data);
+            }
             throw error;
         }
     }
@@ -149,78 +212,117 @@ class HeliusService {
 
     // Parse SWAP transaction data with enhanced details
     parseSwapTransaction(transaction) {
-        if (!transaction || transaction.type !== 'SWAP') return null;
+        console.log('[DEBUG] Parsing swap transaction:', JSON.stringify(transaction, null, 2));
+
+        // Handle both enhanced and basic webhook formats
+        if (!transaction) return null;
 
         try {
-            const {
-                timestamp,
-                signature,
-                tokenTransfers,
-                nativeTransfers,
-                source,
-                fee,
-                events
-            } = transaction;
+            // For enhanced webhook format
+            if (transaction.type === 'SWAP' && transaction.events?.swap) {
+                const {
+                    timestamp,
+                    signature,
+                    source,
+                    fee,
+                    events
+                } = transaction;
 
-            // Extract swap details from events
-            const swapEvent = events?.swap;
-            if (!swapEvent) return null;
+                const swapEvent = events.swap;
 
-            // Enhanced swap data parsing
-            const swapData = {
-                timestamp,
-                signature,
-                wallet: source,
-                fee: fee || 0,
-                type: 'SWAP',
-                usdValue: swapEvent.usdValue || 0,
-                // Token sent details
-                tokenSent: {
-                    mint: swapEvent.tokenIn,
-                    amount: swapEvent.amountIn,
-                    symbol: swapEvent.tokenInSymbol || 'Unknown',
-                    decimals: swapEvent.tokenInDecimals || 0,
-                    usdValue: swapEvent.tokenInUsdValue || 0
-                },
-                // Token received details
-                tokenReceived: {
-                    mint: swapEvent.tokenOut,
-                    amount: swapEvent.amountOut,
-                    symbol: swapEvent.tokenOutSymbol || 'Unknown',
-                    decimals: swapEvent.tokenOutDecimals || 0,
-                    usdValue: swapEvent.tokenOutUsdValue || 0
-                },
-                // Market details
-                market: {
-                    name: swapEvent.platformName || 'Unknown DEX',
-                    address: swapEvent.platformAddress || null,
-                    fee: swapEvent.platformFee || 0
-                }
-            };
-
-            // Calculate price per token
-            if (swapEvent.amountIn && swapEvent.amountOut) {
-                swapData.pricePerToken = {
-                    in: swapEvent.tokenInUsdValue / swapEvent.amountIn,
-                    out: swapEvent.tokenOutUsdValue / swapEvent.amountOut
+                return {
+                    timestamp,
+                    signature,
+                    wallet: source,
+                    fee: fee || 0,
+                    type: 'SWAP',
+                    usdValue: swapEvent.usdValue || 0,
+                    tokenSent: {
+                        mint: swapEvent.tokenIn,
+                        amount: swapEvent.amountIn,
+                        symbol: swapEvent.tokenInSymbol || 'Unknown',
+                        decimals: swapEvent.tokenInDecimals || 0,
+                        usdValue: swapEvent.tokenInUsdValue || 0
+                    },
+                    tokenReceived: {
+                        mint: swapEvent.tokenOut,
+                        amount: swapEvent.amountOut,
+                        symbol: swapEvent.tokenOutSymbol || 'Unknown',
+                        decimals: swapEvent.tokenOutDecimals || 0,
+                        usdValue: swapEvent.tokenOutUsdValue || 0
+                    },
+                    market: {
+                        name: swapEvent.platformName || 'Unknown DEX',
+                        address: swapEvent.platformAddress || null,
+                        fee: swapEvent.platformFee || 0
+                    }
                 };
             }
 
-            return swapData;
+            // For basic webhook format
+            if (transaction.description?.includes('Swap') || transaction.type?.includes('SWAP')) {
+                const {
+                    timestamp,
+                    signature,
+                    accountData,
+                    tokenTransfers,
+                    nativeTransfers
+                } = transaction;
+
+                // Calculate total value
+                let usdValue = 0;
+                let tokenSent = null;
+                let tokenReceived = null;
+
+                if (tokenTransfers?.length >= 2) {
+                    tokenSent = {
+                        mint: tokenTransfers[0].mint,
+                        amount: tokenTransfers[0].tokenAmount,
+                        symbol: tokenTransfers[0].symbol || 'Unknown',
+                        decimals: tokenTransfers[0].decimals || 0,
+                        usdValue: tokenTransfers[0].usdValue || 0
+                    };
+                    tokenReceived = {
+                        mint: tokenTransfers[1].mint,
+                        amount: tokenTransfers[1].tokenAmount,
+                        symbol: tokenTransfers[1].symbol || 'Unknown',
+                        decimals: tokenTransfers[1].decimals || 0,
+                        usdValue: tokenTransfers[1].usdValue || 0
+                    };
+                    usdValue = Math.max(tokenSent.usdValue, tokenReceived.usdValue);
+                }
+
+                return {
+                    timestamp,
+                    signature,
+                    wallet: accountData?.account || transaction.source,
+                    fee: transaction.fee || 0,
+                    type: 'SWAP',
+                    usdValue,
+                    tokenSent,
+                    tokenReceived,
+                    market: {
+                        name: 'DEX',
+                        address: null,
+                        fee: 0
+                    }
+                };
+            }
+
+            return null;
         } catch (error) {
-            console.error('[ERROR] Failed to parse swap transaction:', error.message);
+            console.error('[ERROR] Failed to parse swap transaction:', error);
+            console.error('[ERROR] Transaction data:', JSON.stringify(transaction, null, 2));
             return null;
         }
     }
 
     // Format swap notification with rich details
-    formatSwapNotification(swapData) {
+    async formatSwapNotification(swapData) {
         const {
             walletName,
             tokenSent,
             tokenReceived,
-            market,
-            signature,
             usdValue
         } = swapData;
 
@@ -228,31 +330,51 @@ class HeliusService {
         const sentAmount = this.formatTokenAmount(tokenSent.amount, tokenSent.decimals);
         const receivedAmount = this.formatTokenAmount(tokenReceived.amount, tokenReceived.decimals);
 
+        // List of stablecoin/base token mints
+        const baseTokens = [
+            'So11111111111111111111111111111111111111112', // SOL
+            'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
+            'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', // USDT
+        ];
+
+        const fields = [
+            {
+                name: '📤 Sent',
+                value: `${sentAmount} ${tokenSent.symbol}\n($${this.formatUSD(tokenSent.usdValue)})`,
+                inline: true
+            },
+            {
+                name: '📥 Received',
+                value: `${receivedAmount} ${tokenReceived.symbol}\n($${this.formatUSD(tokenReceived.usdValue)})`,
+                inline: true
+            }
+        ];
+
+        // Only show token stats if:
+        // 1. Sending a base token (SOL/USDC/USDT)
+        // 2. Receiving a non-base token
+        if (baseTokens.includes(tokenSent.mint) && !baseTokens.includes(tokenReceived.mint)) {
+            // Get token info for received token
+            const tokenInfo = await this.birdeyeService.getTokenInfo(tokenReceived.mint);
+            if (tokenInfo) {
+                fields.push({
+                    name: '📊 Token Stats',
+                    value: [
+                        `💰 Price: $${this.formatUSD(tokenInfo.price)}`,
+                        tokenInfo.marketCap ? `💎 MC: $${this.formatUSD(tokenInfo.marketCap)}` : null,
+                        tokenInfo.liquidity ? `💧 LP: $${this.formatUSD(tokenInfo.liquidity)}` : null,
+                        tokenInfo.holders ? `👥 Holders: ${this.formatNumber(tokenInfo.holders)}` : null,
+                        `\n[📈 View Chart](https://dexscreener.com/solana/${tokenReceived.mint})`
+                    ].filter(Boolean).join('\n'),
+                    inline: false
+                });
+            }
+        }
+
         return {
             title: `🔄 Swap by ${walletName}`,
             description: `Swapped tokens worth $${this.formatUSD(usdValue)}`,
-            fields: [
-                {
-                    name: '📤 Sent',
-                    value: `${sentAmount} ${tokenSent.symbol}\n($${this.formatUSD(tokenSent.usdValue)})`,
-                    inline: true
-                },
-                {
-                    name: '📥 Received',
-                    value: `${receivedAmount} ${tokenReceived.symbol}\n($${this.formatUSD(tokenReceived.usdValue)})`,
-                    inline: true
-                },
-                {
-                    name: '🏦 Market',
-                    value: market.name,
-                    inline: true
-                },
-                {
-                    name: '🔍 Transaction',
-                    value: `[View on Solscan](https://solscan.io/tx/${signature})`,
-                    inline: false
-                }
-            ],
+            fields,
             color: 0x00ff00,
             timestamp: new Date().toISOString()
         };
@@ -318,35 +440,178 @@ class HeliusService {
 
     // Handle webhook events with simplified in-memory approach
     async handleWebhook(data) {
-        if (!data || !data.events || !Array.isArray(data.events)) {
-            console.log('[DEBUG] Invalid webhook data received');
-            return;
-        }
+        try {
+            console.log('[DEBUG] Received webhook data:', JSON.stringify(data, null, 2));
 
-        console.log(`[DEBUG] Processing ${data.events.length} webhook events`);
-
-        for (const event of data.events) {
-            try {
-                const swapData = this.parseSwapTransaction(event);
-                if (!swapData) continue;
-
-                // Use in-memory wallet name or create a shortened version
-                const walletName = this.walletNames.get(swapData.wallet) || 
-                                 `${swapData.wallet.slice(0, 4)}...${swapData.wallet.slice(-4)}`;
-
-                // Add wallet name to swap data
-                swapData.walletName = walletName;
-
-                // Format notification
-                const notification = this.formatSwapNotification(swapData);
-
-                // Return the formatted notification for the bot to handle
-                return notification;
-
-            } catch (error) {
-                console.error('[ERROR] Error processing webhook event:', error);
+            // Ensure we have the correct channel ID from environment
+            const WALLETS_CHANNEL = process.env.DISCORD_WALLETS_CHANNEL;
+            if (!WALLETS_CHANNEL) {
+                console.error('[ERROR] DISCORD_WALLETS_CHANNEL not configured');
+                return;
             }
+
+            // Process transactions in small batches with slight delays
+            const BATCH_SIZE = 3;
+            const DELAY_BETWEEN_NOTIFICATIONS = 2000;
+
+            // Group transactions into batches
+            for (let i = 0; i < data.length; i += BATCH_SIZE) {
+                const batch = data.slice(i, i + BATCH_SIZE);
+                
+                // Process each transaction in the batch concurrently
+                await Promise.all(batch.map(async (transaction) => {
+                    try {
+                        // Find the relevant wallet address from the transaction
+                        let walletAddress = transaction.accountData?.account || 
+                                          transaction.source ||
+                                          (transaction.tokenBalanceChanges?.[0]?.userAccount);
+
+                        console.log(`[DEBUG] Identified wallet address: ${walletAddress}`);
+
+                        // Skip if not a tracked wallet
+                        if (!walletAddress || !this.walletNames.has(walletAddress)) {
+                            console.log(`[DEBUG] Skipping transaction for untracked wallet: ${walletAddress}`);
+                            return;
+                        }
+
+                        let notification;
+                        const walletName = this.walletNames.get(walletAddress);
+
+                        // Handle SWAP transactions
+                        if (transaction.type === 'SWAP') {
+                            const swapData = this.parseSwapTransaction(transaction);
+                            if (swapData) {
+                                notification = await this.formatSwapNotification({
+                                    ...swapData,
+                                    walletName
+                                });
+
+                                // Send notification if we have one
+                                if (notification && this.onNotification) {
+                                    // Check if this is a high-value transaction (>= $1000)
+                                    const isHighValue = swapData.usdValue >= 1000;
+                                    await this.onNotification({
+                                        content: isHighValue ? '@everyone High-value swap detected! 🔥' : null,
+                                        embeds: [notification],
+                                        allowedMentions: { parse: isHighValue ? ['everyone'] : [] }
+                                    });
+                                    console.log('[DEBUG] Sent notification for swap transaction');
+                                }
+                            }
+                        } 
+                        // Handle TRANSFER transactions
+                        else if (transaction.tokenBalanceChanges?.length > 0) {
+                            notification = await this.formatTransferNotification(transaction, walletName);
+
+                            // Send notification if we have one
+                            if (notification && this.onNotification) {
+                                // Check if this is a high-value transfer (>= $1000)
+                                const isHighValue = notification.color === 0xFF0000;
+                                await this.onNotification({
+                                    content: isHighValue ? '@everyone High-value transfer detected! 🔥' : null,
+                                    embeds: [notification],
+                                    allowedMentions: { parse: isHighValue ? ['everyone'] : [] }
+                                });
+                                console.log('[DEBUG] Sent notification for transfer transaction');
+                            }
+                        }
+
+                    } catch (txError) {
+                        console.error('[ERROR] Error processing transaction:', txError);
+                    }
+                }));
+
+                // Add delay between batches if there are more to process
+                if (i + BATCH_SIZE < data.length) {
+                    await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_NOTIFICATIONS));
+                }
+            }
+
+        } catch (error) {
+            console.error('[ERROR] Error processing webhook:', error);
         }
+    }
+
+    // Format transfer notification
+    async formatTransferNotification(transaction, walletName) {
+        try {
+            let totalUsdValue = 0;
+            const fields = [];
+
+            // List of stablecoin/base token mints
+            const baseTokens = [
+                'So11111111111111111111111111111111111111112', // SOL
+                'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
+                'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', // USDT
+            ];
+
+            // Process token transfers
+            for (const transfer of transaction.tokenBalanceChanges) {
+                let tokenInfo = null;
+                if (transfer.mint) {
+                    try {
+                        tokenInfo = await this.birdeyeService.getTokenInfo(transfer.mint);
+                    } catch (error) {
+                        console.error(`[ERROR] Failed to fetch Birdeye data for token ${transfer.mint}:`, error);
+                    }
+                }
+
+                const amount = Math.abs(Number(transfer.rawTokenAmount.tokenAmount));
+                const decimals = transfer.rawTokenAmount.decimals;
+                const formattedAmount = this.formatTokenAmount(amount, decimals);
+                const isOutgoing = Number(transfer.rawTokenAmount.tokenAmount) < 0;
+
+                // Calculate USD value if available
+                if (tokenInfo?.price) {
+                    const usdValue = (amount / Math.pow(10, decimals)) * tokenInfo.price;
+                    totalUsdValue += usdValue;
+                }
+
+                // Create token transfer field
+                const fieldValue = [`${formattedAmount} ${tokenInfo?.symbol || 'tokens'}`];
+                
+                if (tokenInfo?.price) {
+                    fieldValue.push(`$${this.formatUSD((amount / Math.pow(10, decimals)) * tokenInfo.price)}`);
+                }
+
+                fields.push({
+                    name: isOutgoing ? '📤 Sent' : '📥 Received',
+                    value: fieldValue.join('\n'),
+                    inline: true
+                });
+
+                // Only show token stats for non-base tokens
+                if (tokenInfo && !baseTokens.includes(transfer.mint)) {
+                    fields.push({
+                        name: '📊 Token Stats',
+                        value: [
+                            `💰 Price: $${this.formatUSD(tokenInfo.price)}`,
+                            tokenInfo.marketCap ? `💎 MC: $${this.formatUSD(tokenInfo.marketCap)}` : null,
+                            tokenInfo.liquidity ? `💧 LP: $${this.formatUSD(tokenInfo.liquidity)}` : null,
+                            tokenInfo.holders ? `👥 Holders: ${this.formatNumber(tokenInfo.holders)}` : null,
+                            `\n[📈 View Chart](https://dexscreener.com/solana/${transfer.mint})`
+                        ].filter(Boolean).join('\n'),
+                        inline: false
+                    });
+                }
+            }
+
+            return {
+                title: totalUsdValue >= 1000 ? '🔥 High Value Transfer' : '💸 Token Transfer',
+                description: `Transfer by ${walletName}${totalUsdValue > 0 ? ` worth $${this.formatUSD(totalUsdValue)}` : ''}`,
+                fields,
+                color: totalUsdValue >= 1000 ? 0xFF0000 : 0x9945FF,
+                timestamp: new Date().toISOString()
+            };
+        } catch (error) {
+            console.error('[ERROR] Error formatting transfer notification:', error);
+            return null;
+        }
+    }
+
+    // Register notification callback
+    setNotificationHandler(callback) {
+        this.onNotification = callback;
     }
 
     // Add a wallet name to in-memory storage
@@ -357,6 +622,25 @@ class HeliusService {
     // Get a wallet name from in-memory storage
     getWalletName(address) {
         return this.walletNames.get(address);
+    }
+
+    // Helper function to format numbers
+    formatNumber(num) {
+        if (!num && num !== 0) return '0';
+        
+        const value = parseFloat(num);
+        if (isNaN(value)) return '0';
+        
+        if (value === 0) return '0';
+        
+        if (value >= 1e9) return `${(value / 1e9).toFixed(2)}B`;
+        if (value >= 1e6) return `${(value / 1e6).toFixed(2)}M`;
+        if (value >= 1e3) return `${(value / 1e3).toFixed(2)}K`;
+        
+        if (Math.abs(value) < 0.000001) return value.toExponential(2);
+        if (Math.abs(value) < 0.01) return value.toFixed(6);
+        if (Math.abs(value) < 1) return value.toFixed(4);
+        return value.toFixed(2);
     }
 }
 
