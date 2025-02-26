@@ -77,8 +77,8 @@ class TwitterMonitorBot {
             }
 
             console.log('✅ Bot initialization complete');
-            return true;
-        } catch (error) {
+                return true;
+            } catch (error) {
             console.error('❌ Error during initialization:', error);
             throw error;
         }
@@ -121,7 +121,7 @@ class TwitterMonitorBot {
     // Add processed tweet
     async addProcessedTweet(tweet) {
         this.state.processedTweets.set(tweet.id, {
-            ...tweet,
+                        ...tweet,
             processed_at: new Date().toISOString()
         });
     }
@@ -169,7 +169,280 @@ class TwitterMonitorBot {
             .filter(sub => sub.is_active);
     }
 
-    // ... rest of existing code without database operations ...
+    setupCommandHandling() {
+        console.log('🔄 Setting up command handling...');
+        
+        this.client.on('interactionCreate', async interaction => {
+            // Only handle slash commands from our guild
+            if (!interaction.isCommand() || interaction.guildId !== this.config.discord.guildId) return;
+
+            // Simple command handling
+            try {
+                const command = interaction.commandName;
+                console.log(`[DEBUG] Received command: ${command} from ${interaction.user.tag}`);
+
+                switch (command) {
+                    case 'monitor':
+                        if (!interaction.replied) {
+                            await this.handleMonitorCommand(interaction);
+                        }
+                        break;
+                    case 'stopm':
+                        if (!interaction.replied) {
+                            await this.handleStopMonitorCommand(interaction);
+                        }
+                        break;
+                    case 'list':
+                        if (!interaction.replied) {
+                            await this.handleListCommand(interaction);
+                        }
+                        break;
+                    case 'test':
+                        if (!interaction.replied) {
+                            await this.testNotifications(interaction);
+                        }
+                        break;
+                    case 'help':
+                        if (!interaction.replied) {
+                            await this.handleHelpCommand(interaction);
+                        }
+                        break;
+                    default:
+                        if (!interaction.replied) {
+                            await interaction.reply({ 
+                                content: 'Unknown command. Use `/help` to see available commands.',
+                                ephemeral: true 
+                            });
+                        }
+                }
+            } catch (error) {
+                console.error('[ERROR] Command handling error:', error);
+                if (!interaction.replied && !interaction.deferred) {
+                    await interaction.reply({
+                        embeds: [{
+                            title: "Error",
+                            description: `❌ Command failed to execute: ${error.message}`,
+                            color: 0xFF0000
+                        }],
+                        ephemeral: true
+                    });
+                }
+            }
+        });
+    }
+
+    // Command handlers
+    async handleMonitorCommand(interaction) {
+        try {
+            await interaction.deferReply();
+            
+            const username = interaction.options.getString('twitter_id').toLowerCase().replace('@', '');
+            const type = interaction.options.getString('type');
+            
+            // Get Twitter user info
+            let userInfo;
+            try {
+                userInfo = await this.twitter.v2.userByUsername(username, {
+                    'user.fields': ['id', 'username', 'name', 'profile_image_url']
+                });
+            } catch (error) {
+                return await interaction.editReply({
+                    embeds: [{
+                        title: '❌ Error',
+                        description: `Could not find Twitter account @${username}`,
+                        color: 0xFF0000
+                    }]
+                });
+            }
+
+            if (!userInfo?.data) {
+                return await interaction.editReply({
+                    embeds: [{
+                        title: '❌ Error',
+                        description: `Could not find Twitter account @${username}`,
+                        color: 0xFF0000
+                    }]
+                });
+            }
+
+            // Check if already monitoring
+            const existingAccount = Array.from(this.state.monitoredAccounts.values())
+                .find(a => a.twitter_id === userInfo.data.id && a.monitor_type === type);
+
+            if (existingAccount) {
+                return await interaction.editReply({
+                    embeds: [{
+                        title: 'Already Monitoring',
+                        description: `Already monitoring @${username} for ${type === 'solana' ? 'Solana addresses' : 'tweets'}`,
+                        color: 0x9945FF
+                    }]
+                });
+            }
+
+            // Add account to monitoring
+            await this.addMonitoredAccount({
+                twitter_id: userInfo.data.id,
+                username,
+                monitor_type: type,
+                profile_data: JSON.stringify(userInfo.data)
+            });
+
+            // Start monitoring if not already running
+            if (!this.state.monitoringInterval) {
+                await this.startMonitoring();
+            }
+
+            return await interaction.editReply({
+                embeds: [{
+                    title: `✅ ${type === 'solana' ? 'Solana Address' : 'Tweet'} Tracker Started`,
+                    description: `Successfully monitoring @${username}`,
+                    color: 0x00FF00
+                }]
+            });
+
+        } catch (error) {
+            console.error('[ERROR] Monitor command error:', error);
+            await interaction.editReply({
+                embeds: [{
+                    title: "Command Error",
+                    description: "❌ An error occurred while processing the command",
+                    color: 0xFF0000
+                }]
+            });
+        }
+    }
+
+    async handleStopMonitorCommand(interaction) {
+        try {
+            const username = interaction.options.getString('twitter_id').toLowerCase().replace('@', '');
+
+            // Check if account is being monitored
+            const account = Array.from(this.state.monitoredAccounts.values())
+                .find(a => a.username === username);
+
+            if (!account) {
+                return await interaction.reply({
+                    embeds: [{
+                        title: '❌ Account Not Found',
+                        description: `@${username} is not currently being monitored.`,
+                        color: 0xFF0000
+                    }]
+                });
+            }
+
+            // Remove account from monitoring
+            await this.removeMonitoredAccount(account.twitter_id);
+
+            return await interaction.reply({
+                embeds: [{
+                    title: '✅ Monitoring Stopped',
+                    description: `Successfully stopped monitoring @${username}`,
+                    color: 0x00FF00
+                }]
+            });
+
+        } catch (error) {
+            console.error('[ERROR] Stop monitor command error:', error);
+            await interaction.reply({
+                embeds: [{
+                    title: "Command Error",
+                    description: "❌ An error occurred while stopping the monitor",
+                    color: 0xFF0000
+                }]
+            });
+        }
+    }
+
+    async handleListCommand(interaction) {
+        try {
+            const accounts = await this.getMonitoredAccounts();
+            
+            if (accounts.length === 0) {
+                return await interaction.reply({
+                    embeds: [{
+                        title: 'No Monitored Accounts',
+                        description: 'Not currently monitoring any accounts.',
+                        color: 0x9945FF
+                    }]
+                });
+            }
+
+            const accountList = accounts.map(account => 
+                `• @${account.username} (${account.monitor_type})`
+            ).join('\n');
+
+            return await interaction.reply({
+                embeds: [{
+                    title: '📋 Monitored Accounts',
+                    description: accountList,
+                    color: 0x9945FF
+                }]
+            });
+
+        } catch (error) {
+            console.error('[ERROR] List command error:', error);
+            await interaction.reply({
+                embeds: [{
+                    title: "Command Error",
+                    description: "❌ An error occurred while listing accounts",
+                    color: 0xFF0000
+                }]
+            });
+        }
+    }
+
+    async handleHelpCommand(interaction) {
+        try {
+            const embed = {
+                title: '🐈‍⬛ Twitter Monitor Bot',
+                description: 'Available commands:',
+                color: 0x9945FF,
+                fields: [
+                    {
+                        name: '📱 Twitter Monitoring',
+                        value: `
+\`/monitor\` - Start monitoring a Twitter account
+\`/stopm\` - Stop monitoring a Twitter account
+\`/list\` - List all monitored accounts`,
+                        inline: false
+                    }
+                ]
+            };
+
+            await interaction.reply({ embeds: [embed] });
+        } catch (error) {
+            console.error('[ERROR] Help command error:', error);
+            await interaction.reply({
+                embeds: [{
+                    title: "Command Error",
+                    description: "❌ Failed to display help information",
+                    color: 0xFF0000
+                }]
+            });
+        }
+    }
+
+    async testNotifications(interaction) {
+        try {
+            await interaction.reply({
+                embeds: [{
+                    title: '🧪 Test Message',
+                    description: 'This is a test notification. If you can see this, notifications are working!',
+                    color: 0x00FF00
+                }]
+            });
+        } catch (error) {
+            console.error('[ERROR] Test command error:', error);
+            await interaction.reply({
+                embeds: [{
+                    title: "Test Failed",
+                    description: `❌ Error running tests: ${error.message}`,
+                    color: 0xFF0000
+                }]
+            });
+        }
+    }
+
 } // End of class TwitterMonitorBot
 
 module.exports = TwitterMonitorBot;
