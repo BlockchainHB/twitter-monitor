@@ -4,10 +4,6 @@ const RateLimitManager = require('./core/RateLimitManager');
 const HeliusService = require('./core/HeliusService');
 const DexScreenerService = require('./core/DexScreenerService');
 const BirdeyeService = require('./core/BirdeyeService');
-const { initializeDatabase } = require('./database/init');
-const sqlite3 = require('sqlite3').verbose();
-const path = require('path');
-const fs = require('fs').promises;
 const { Client, GatewayIntentBits } = require('discord.js');
 
 // Set production environment if not set
@@ -34,24 +30,13 @@ function logMemoryUsage() {
     }
 }
 
-// Global error handler for promises
-process.on('unhandledRejection', (error) => {
-    console.error('🚨 Unhandled Promise Rejection:', error);
-});
-
 async function initializeBot() {
     try {
         console.log('Environment:', process.env.NODE_ENV);
-        console.log('Database path:', config.database.path);
-        console.log('Monitoring interval:', config.monitoring.interval, 'ms');
-
-        // Initialize database
-        const { db } = await initializeDatabase();
-        if (!db) throw new Error('Failed to initialize database');
 
         // Initialize services
         const rateLimitManager = new RateLimitManager(config.twitter.rateLimit);
-        const heliusService = new HeliusService(config.helius.apiKey, db);
+        const heliusService = new HeliusService(config.helius.apiKey);
         const birdeyeService = new BirdeyeService();
         const dexScreenerService = new DexScreenerService();
 
@@ -68,7 +53,6 @@ async function initializeBot() {
         const bot = new TwitterMonitorBot({
             client,
             config,
-            db,
             rateLimitManager,
             services: {
                 helius: heliusService,
@@ -82,11 +66,7 @@ async function initializeBot() {
         console.log('Bot initialization complete');
 
         // Log memory usage
-        const used = process.memoryUsage();
-        console.log('Memory usage:');
-        for (let key in used) {
-            console.log(`${key}: ${Math.round(used[key] / 1024 / 1024 * 100) / 100} MB`);
-        }
+        logMemoryUsage();
 
         return bot;
     } catch (error) {
@@ -138,7 +118,6 @@ async function main() {
         // Log environment
         console.log('📊 Environment Configuration:');
         console.log('- NODE_ENV:', process.env.NODE_ENV);
-        console.log('- Database Path:', config.database.path);
         console.log('- Monitoring Interval:', config.monitoring.interval, 'ms');
         
         // Initialize bot with dependencies
