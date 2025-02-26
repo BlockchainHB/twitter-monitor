@@ -1,6 +1,6 @@
-FROM node:18-slim
+FROM node:18.19-slim AS builder
 
-# Install build dependencies
+# Install dependencies
 RUN apt-get update && apt-get install -y \
     python3 \
     make \
@@ -11,10 +11,10 @@ RUN apt-get update && apt-get install -y \
 # Create app directory
 WORKDIR /app
 
-# Copy package files
+# Copy package files first
 COPY package*.json ./
 
-# Install dependencies
+# Install dependencies using ci to respect package-lock.json
 RUN npm ci
 
 # Copy app source
