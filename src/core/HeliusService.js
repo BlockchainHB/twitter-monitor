@@ -47,114 +47,37 @@ class HeliusService {
     // Sync wallets with Helius webhook
     async syncWallets() {
         try {
-            console.log('📡 Syncing wallets with Helius...');
+            console.log('📡 Checking webhook configuration...');
             
-            // Get all wallet addresses from database
-            const wallets = await new Promise((resolve, reject) => {
-                this.db.all('SELECT wallet_address FROM monitored_wallets', [], (err, rows) => {
+            // Get existing webhook from database
+            const webhook = await new Promise((resolve, reject) => {
+                this.db.get('SELECT webhook_id, webhook_url FROM helius_webhooks WHERE active = 1', [], (err, row) => {
                     if (err) reject(err);
-                    else resolve(rows || []);
+                    else resolve(row);
                 });
             });
-            
-            if (!wallets || wallets.length === 0) {
-                console.log('No wallets to sync');
+
+            if (!webhook) {
+                console.log('⚠️ No active webhook found. Please run configure-webhook.js to set up the webhook.');
                 return null;
             }
 
-            // First, list all existing webhooks
-            console.log('🔍 Checking existing webhooks...');
-            const existingWebhooks = await this.rateLimitManager.scheduleRequest(
-                () => this.listWebhooks(),
-                'helius/webhooks/list'
-            );
-            
-            // Clean up existing webhooks if any
-            if (existingWebhooks && existingWebhooks.length > 0) {
-                console.log(`🧹 Found ${existingWebhooks.length} existing webhooks, cleaning up...`);
-                for (const webhook of existingWebhooks) {
-                    try {
-                        await this.rateLimitManager.scheduleRequest(
-                            () => this.deleteWebhook(webhook.webhookID),
-                            'helius/webhooks/delete'
-                        );
-                        console.log(`✅ Deleted webhook ${webhook.webhookID}`);
-                        // Add a small delay between deletions
-                        await new Promise(resolve => setTimeout(resolve, 1000));
-                    } catch (error) {
-                        console.warn(`⚠️ Failed to delete webhook ${webhook.webhookID}:`, error.message);
-                    }
+            // Verify webhook is still valid
+            try {
+                const webhookDetails = await this.getWebhook(webhook.webhook_id);
+                if (!webhookDetails) {
+                    console.error('❌ Webhook not found on Helius. Please run configure-webhook.js to set up the webhook.');
+                    return null;
                 }
-            }
-
-            // Clear any existing webhook records in the database
-            await new Promise((resolve, reject) => {
-                this.db.run('DELETE FROM helius_webhooks', [], (err) => {
-                    if (err) reject(err);
-                    else resolve();
-                });
-            });
-
-            // Only create webhook if we have wallets to monitor
-            if (wallets.length === 0) {
-                console.log('ℹ️ No wallets to monitor, skipping webhook creation');
+                console.log('✅ Webhook verification successful');
+                return webhook.webhook_id;
+            } catch (error) {
+                console.error('❌ Failed to verify webhook:', error);
+                console.log('Please run configure-webhook.js to reconfigure the webhook.');
                 return null;
             }
-
-            // Create new webhook
-            console.log('🆕 Creating new webhook...');
-            const webhookUrl = this.getWebhookUrl(wallets[0].wallet_address);
-            console.log(`Webhook URL: ${webhookUrl}`);
-            console.log(`Account Addresses: ${JSON.stringify(wallets.map(w => w.wallet_address))}`);
-            
-            const response = await this.rateLimitManager.scheduleRequest(
-                () => this.createWebhook(webhookUrl, wallets.map(w => w.wallet_address)),
-                'helius/webhooks/create'
-            );
-
-            if (!response || !response.webhookID) {
-                throw new Error('Failed to get webhook ID from response');
-            }
-
-            const webhookId = response.webhookID;
-            console.log(`✅ Created webhook with ID: ${webhookId}`);
-
-            // Verify webhook was created correctly
-            console.log('🔍 Verifying webhook configuration...');
-            const webhookDetails = await this.getWebhook(webhookId);
-            
-            if (!webhookDetails || webhookDetails.webhookURL !== webhookUrl) {
-                throw new Error('Webhook verification failed: URL mismatch');
-            }
-
-            if (!webhookDetails.accountAddresses || 
-                !Array.isArray(webhookDetails.accountAddresses) || 
-                webhookDetails.accountAddresses.length !== wallets.length) {
-                throw new Error('Webhook verification failed: Account addresses mismatch');
-            }
-
-            console.log('✅ Webhook verification successful');
-
-            // Store webhook info
-            await new Promise((resolve, reject) => {
-                this.db.run(
-                    'INSERT INTO helius_webhooks (webhook_id, webhook_url, active) VALUES (?, ?, ?)',
-                    [webhookId, webhookUrl, 1],
-                    (err) => {
-                        if (err) reject(err);
-                        else resolve();
-                    }
-                );
-            });
-
-            console.log(`✅ Successfully synced ${wallets.length} wallets with Helius`);
-            return webhookId;
         } catch (error) {
-            console.error('❌ Failed to sync wallets with Helius:', error);
-            if (error.response) {
-                console.error('Response data:', error.response.data);
-                console.error('Response status:', error.response.status);
-            }
+            console.error('❌ Error checking webhook configuration:', error);
             throw error;
         }
     }
@@ -231,7 +154,7 @@ class HeliusService {
         }
     }
 
-    // Parse SWAP transaction data
+    // Parse SWAP transaction data with enhanced details
     parseSwapTransaction(transaction) {
         if (!transaction || transaction.type !== 'SWAP') return null;
 
@@ -250,20 +173,202 @@ class HeliusService {
             const swapEvent = events?.swap;
             if (!swapEvent) return null;
 
-            return {
+            // Enhanced swap data parsing
+            const swapData = {
                 timestamp,
                 signature,
-                tokenTransfers,
-                nativeTransfers,
-                source,
-                fee,
-                swapDetails: swapEvent,
-                usdValue: swapEvent.usdValue || 0
+                wallet: source,
+                fee: fee || 0,
+                type: 'SWAP',
+                usdValue: swapEvent.usdValue || 0,
+                // Token sent details
+                tokenSent: {
+                    mint: swapEvent.tokenIn,
+                    amount: swapEvent.amountIn,
+                    symbol: swapEvent.tokenInSymbol || 'Unknown',
+                    decimals: swapEvent.tokenInDecimals || 0,
+                    usdValue: swapEvent.tokenInUsdValue || 0
+                },
+                // Token received details
+                tokenReceived: {
+                    mint: swapEvent.tokenOut,
+                    amount: swapEvent.amountOut,
+                    symbol: swapEvent.tokenOutSymbol || 'Unknown',
+                    decimals: swapEvent.tokenOutDecimals || 0,
+                    usdValue: swapEvent.tokenOutUsdValue || 0
+                },
+                // Market details
+                market: {
+                    name: swapEvent.platformName || 'Unknown DEX',
+                    address: swapEvent.platformAddress || null,
+                    fee: swapEvent.platformFee || 0
+                },
+                // Price impact and slippage
+                priceImpact: swapEvent.priceImpact || null,
+                slippage: swapEvent.slippage || null,
+                // Additional context
+                innerInstructions: transaction.innerInstructions || [],
+                accountData: transaction.accountData || {},
+                preTokenBalances: transaction.preTokenBalances || [],
+                postTokenBalances: transaction.postTokenBalances || []
             };
+
+            // Calculate price per token
+            if (swapEvent.amountIn && swapEvent.amountOut) {
+                swapData.pricePerToken = {
+                    in: swapEvent.tokenInUsdValue / swapEvent.amountIn,
+                    out: swapEvent.tokenOutUsdValue / swapEvent.amountOut
+                };
+            }
+
+            return swapData;
         } catch (error) {
             console.error('[ERROR] Failed to parse swap transaction:', error.message);
             return null;
         }
+    }
+
+    // Handle webhook events with enhanced processing
+    async handleWebhook(data) {
+        if (!data || !data.events || !Array.isArray(data.events)) {
+            console.log('[DEBUG] Invalid webhook data received');
+            return;
+        }
+
+        console.log(`[DEBUG] Processing ${data.events.length} webhook events`);
+
+        for (const event of data.events) {
+            try {
+                // Parse the swap transaction
+                const swapData = this.parseSwapTransaction(event);
+                if (!swapData) {
+                    console.log('[DEBUG] Skipping non-swap event');
+                    continue;
+                }
+
+                // Get wallet details from database
+                const walletInfo = await new Promise((resolve, reject) => {
+                    this.db.get(
+                        'SELECT name, discord_user_id FROM monitored_wallets WHERE wallet_address = ?',
+                        [swapData.wallet],
+                        (err, row) => {
+                            if (err) reject(err);
+                            else resolve(row);
+                        }
+                    );
+                });
+
+                if (!walletInfo) {
+                    console.log(`[WARN] Wallet ${swapData.wallet} not found in database, using shortened address as name`);
+                    // Create a shortened version of the address for display
+                    const shortAddr = `${swapData.wallet.slice(0, 4)}...${swapData.wallet.slice(-4)}`;
+                    swapData.walletName = `Unknown (${shortAddr})`;
+                    swapData.discordUserId = null;
+                } else {
+                    swapData.walletName = walletInfo.name;
+                    swapData.discordUserId = walletInfo.discord_user_id;
+                }
+
+                // Check notification thresholds
+                const shouldNotifyDiscord = swapData.usdValue >= (this.config?.helius?.minSwapValue || 100);
+                const shouldNotifySMS = swapData.usdValue >= (this.config?.helius?.minSmsSwapValue || 1000);
+
+                // Format notification messages
+                const notificationData = this.formatSwapNotification(swapData);
+
+                // Send Discord notification if threshold met
+                if (shouldNotifyDiscord) {
+                    try {
+                        await this.sendDiscordNotification(notificationData);
+                        console.log(`[INFO] Sent Discord notification for ${swapData.walletName}'s swap of $${swapData.usdValue}`);
+                    } catch (error) {
+                        console.error('[ERROR] Failed to send Discord notification:', error);
+                    }
+                }
+
+                // Send SMS notification if threshold met and user subscribed
+                if (shouldNotifySMS && swapData.discordUserId) {
+                    try {
+                        await this.sendSMSNotification(notificationData);
+                        console.log(`[INFO] Sent SMS notification for ${swapData.walletName}'s swap of $${swapData.usdValue}`);
+                    } catch (error) {
+                        console.error('[ERROR] Failed to send SMS notification:', error);
+                    }
+                }
+
+                // Log successful processing
+                console.log(`[INFO] Processed swap event for ${swapData.walletName} (${swapData.wallet})`);
+                console.log(`[INFO] Swap value: $${this.formatUSD(swapData.usdValue)}`);
+
+            } catch (error) {
+                console.error('[ERROR] Error processing webhook event:', error);
+                // Continue processing other events even if one fails
+            }
+        }
+    }
+
+    // Format swap notification with rich details
+    formatSwapNotification(swapData) {
+        const {
+            walletName,
+            tokenSent,
+            tokenReceived,
+            market,
+            signature,
+            usdValue
+        } = swapData;
+
+        // Format amounts with proper decimals
+        const sentAmount = this.formatTokenAmount(tokenSent.amount, tokenSent.decimals);
+        const receivedAmount = this.formatTokenAmount(tokenReceived.amount, tokenReceived.decimals);
+
+        return {
+            title: `🔄 Swap by ${walletName}`,
+            description: `Swapped tokens worth $${this.formatUSD(usdValue)}`,
+            fields: [
+                {
+                    name: '📤 Sent',
+                    value: `${sentAmount} ${tokenSent.symbol}\n($${this.formatUSD(tokenSent.usdValue)})`,
+                    inline: true
+                },
+                {
+                    name: '📥 Received',
+                    value: `${receivedAmount} ${tokenReceived.symbol}\n($${this.formatUSD(tokenReceived.usdValue)})`,
+                    inline: true
+                },
+                {
+                    name: '🏦 Market',
+                    value: market.name,
+                    inline: true
+                },
+                {
+                    name: '🔍 Transaction',
+                    value: `[View on Solscan](https://solscan.io/tx/${signature})`,
+                    inline: false
+                }
+            ],
+            color: 0x00ff00, // Green color for swap notifications
+            timestamp: new Date().toISOString()
+        };
+    }
+
+    // Helper function to format token amounts
+    formatTokenAmount(amount, decimals) {
+        if (!amount) return '0';
+        const value = amount / Math.pow(10, decimals);
+        return value.toLocaleString('en-US', {
+            maximumFractionDigits: 6,
+            minimumFractionDigits: 2
+        });
+    }
+
+    // Helper function to format USD values
+    formatUSD(value) {
+        if (!value) return '0.00';
+        return value.toLocaleString('en-US', {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2
+        });
     }
 
     // Get webhook details

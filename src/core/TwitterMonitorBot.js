@@ -73,145 +73,65 @@ class TwitterMonitorBot {
 
     async initialize() {
         try {
-            console.log('🔄 Setting up bot...');
+            console.log('🚀 Initializing TwitterMonitorBot...');
             
-            // Only initialize database if not provided in constructor
-            if (!this.state.db) {
-                console.log('📊 Initializing in-memory database...');
-                
-                // Always use in-memory database for testing
-                this.state.db = await new Promise((resolve, reject) => {
-                    const db = new sqlite3.Database(':memory:', (err) => {
-                        if (err) reject(err);
-                        else resolve(db);
-                    });
-                });
-                console.log('✅ Database connection established');
-            } else {
-                console.log('Using provided database connection');
-            }
-
-            // Set pragmas for better performance
+            // Set WAL mode for better performance
             await this.dbRun('PRAGMA journal_mode = WAL');
             await this.dbRun('PRAGMA synchronous = NORMAL');
-            await this.dbRun('PRAGMA foreign_keys = ON');
+            await this.dbRun('PRAGMA temp_store = MEMORY');
             
-            // Initialize minimal schema
-            const schema = `
-                -- Set pragmas
-                PRAGMA journal_mode = WAL;
-                PRAGMA synchronous = NORMAL;
-                PRAGMA foreign_keys = ON;
+            // Create migrations table if it doesn't exist
+            await this.dbRun(`
+                CREATE TABLE IF NOT EXISTS migrations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT UNIQUE NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            `);
 
-                -- Create tables
+            // Create monitored_accounts table
+            await this.dbRun(`
                 CREATE TABLE IF NOT EXISTS monitored_accounts (
                     twitter_id TEXT PRIMARY KEY,
                     username TEXT NOT NULL,
-                    last_tweet_id TEXT,
                     monitor_type TEXT NOT NULL,
                     is_vip INTEGER DEFAULT 0,
+                    last_tweet_id TEXT,
                     profile_data TEXT,
-                    created_at INTEGER DEFAULT (strftime('%s', 'now'))
-                );
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            `);
 
-                CREATE TABLE IF NOT EXISTS monitored_wallets (
-                    wallet_address TEXT PRIMARY KEY,
-                    name TEXT NOT NULL,
-                    discord_user_id TEXT NOT NULL,
-                    created_at INTEGER DEFAULT (strftime('%s', 'now'))
-                );
+            // Create index for username lookups
+            await this.dbRun('CREATE INDEX IF NOT EXISTS idx_monitored_accounts_username ON monitored_accounts(username)');
 
-                CREATE TABLE IF NOT EXISTS sms_subscribers (
-                    discord_user_id TEXT PRIMARY KEY,
-                    phone_number TEXT NOT NULL,
-                    created_at INTEGER DEFAULT (strftime('%s', 'now')),
-                    notification_count INTEGER DEFAULT 0,
-                    is_active INTEGER DEFAULT 1
-                );
-
-                CREATE TABLE IF NOT EXISTS helius_webhooks (
-                    webhook_id TEXT PRIMARY KEY,
-                    webhook_url TEXT NOT NULL,
-                    active INTEGER DEFAULT 1,
-                    created_at INTEGER DEFAULT (strftime('%s', 'now')),
-                    last_check INTEGER DEFAULT NULL
-                );
-
-                -- Create minimal indexes
-                CREATE INDEX IF NOT EXISTS idx_monitored_accounts_username ON monitored_accounts(username);
-                CREATE INDEX IF NOT EXISTS idx_monitored_wallets_discord_user ON monitored_wallets(discord_user_id);
-                CREATE INDEX IF NOT EXISTS idx_helius_webhooks_active ON helius_webhooks(active);
-            `;
-            
-            // Execute schema
-            try {
-                const statements = schema
-                    .split(';')
-                    .map(stmt => stmt.trim())
-                    .filter(stmt => stmt && !stmt.startsWith('--'));
-                
-                for (const statement of statements) {
-                    if (statement) {
-                        await this.dbRun(statement);
-                    }
-                }
-                console.log('✅ Schema initialized successfully');
-            } catch (error) {
-                console.error('❌ Error executing schema:', error);
-                throw error;
-            }
-            
-            // Set up Discord client
+            // Initialize Discord client
             await this.client.login(this.config.discord.token);
-            
-            // Get guild and cache channels
-            this.state.guild = this.client.guilds.cache.get(this.config.discord.guildId);
-            if (!this.state.guild) {
-                throw new Error('Could not find configured guild');
-            }
-            
-            // Cache channel IDs
-            this.state.channels = {
-                tweets: this.config.discord.channels.tweets,
-                solana: this.config.discord.channels.solana,
-                vip: this.config.discord.channels.vip,
-                wallets: this.config.discord.channels.wallets
-            };
-            
-            // Set up command handling
+            console.log('✅ Bot logged in successfully');
+
+            // Register commands
+            await this.registerCommands();
+            console.log('✅ Commands registered');
+
+            // Setup command handling
             this.setupCommandHandling();
-            
-            // Set up webhook handling
-            this.setupWebhookHandling();
-            
-            // Load wallets from config file
-            try {
-                console.log('🔄 Loading wallets from config file...');
-                await this.loadWalletsFromConfig();
-                console.log('✅ Wallets loaded from config');
-            } catch (error) {
-                console.error('⚠️ Error loading wallets from config:', error);
-                // Continue setup - we can still work with existing wallets in DB
+            console.log('✅ Command handling setup complete');
+
+            // Start monitoring if there are accounts to monitor
+            const accounts = await this.getMonitoredAccounts();
+            if (accounts.length > 0) {
+                await this.startMonitoring();
+                console.log(`✅ Monitoring started for ${accounts.length} accounts`);
             }
-            
-            // Sync wallets with Helius
-            try {
-                console.log('🔄 Syncing wallets with Helius...');
-                await this.helius.syncWallets(this.config.helius.webhookUrl);
-                console.log('✅ Helius wallet sync completed');
-            } catch (error) {
-                // Log error but don't fail setup - we can retry sync later
-                console.error('⚠️ Helius wallet sync failed:', error);
-                if (error.response) {
-                    console.error('Response data:', error.response.data);
-                    console.error('Response status:', error.response.status);
-                }
-            }
-            
-            console.log('✅ Bot setup completed successfully');
-            
+
+            // Setup Helius webhook if needed
+            await this.setupHeliusWebhook();
+            console.log('✅ Helius webhook setup complete');
+
+            console.log('✅ TwitterMonitorBot initialization complete');
         } catch (error) {
-            console.error('❌ Bot initialization failed:', error);
+            console.error('❌ Error during initialization:', error);
             throw error;
         }
     }
@@ -220,10 +140,10 @@ class TwitterMonitorBot {
     async dbRun(sql, params = []) {
         return new Promise((resolve, reject) => {
             this.state.db.run(sql, params, function(err) {
-                if (err) reject(err);
+                        if (err) reject(err);
                 else resolve(this);
-            });
-        });
+                    });
+                });
     }
 
     async dbGet(sql, params = [], maxRetries = 3) {
@@ -701,67 +621,67 @@ class TwitterMonitorBot {
                 );
 
                 if (!existingTweet) {
-                    // Insert into processed_tweets
-                    await this.dbRun(
+                // Insert into processed_tweets
+                await this.dbRun(
                         `INSERT INTO processed_tweets 
                         (tweet_id, twitter_id, tweet_data, conversation_id, referenced_tweet_id, tweet_type) 
                         VALUES (?, ?, ?, ?, ?, ?)`,
                         [tweet.id, account.twitter_id, JSON.stringify(tweet), tweet.conversation_id, referencedTweetId, tweetType]
-                    );
+                );
 
-                    // Process Solana addresses if found
-                    if (account.monitoring_type === 'solana' || account.monitoring_type === 'vip') {
-                        const addresses = this.extractSolanaAddresses(tweet.text);
-                        if (addresses.length > 0) {
-                            for (const address of addresses) {
-                                // Check if this token mention already exists
-                                const existingMention = await this.dbGet(
-                                    'SELECT 1 FROM token_mentions WHERE tweet_id = ? AND token_address = ?',
-                                    [tweet.id, address]
-                                );
+                // Process Solana addresses if found
+                if (account.monitoring_type === 'solana' || account.monitoring_type === 'vip') {
+                    const addresses = this.extractSolanaAddresses(tweet.text);
+                    if (addresses.length > 0) {
+                        for (const address of addresses) {
+                            // Check if this token mention already exists
+                            const existingMention = await this.dbGet(
+                                'SELECT 1 FROM token_mentions WHERE tweet_id = ? AND token_address = ?',
+                                [tweet.id, address]
+                            );
 
-                                if (!existingMention) {
+                            if (!existingMention) {
                                     // Get token info from Birdeye
                                     const tokenInfo = await this.birdeyeService.getTokenInfo(address);
                                     if (tokenInfo) {
-                                        // Insert or update token info
-                                        await this.dbRun(
-                                            `INSERT OR IGNORE INTO tracked_tokens 
+                                // Insert or update token info
+                                await this.dbRun(
+                                    `INSERT OR IGNORE INTO tracked_tokens 
                                             (address, first_seen_tweet_id) 
                                             VALUES (?, ?)`,
-                                            [address, tweet.id]
-                                        );
+                                    [address, tweet.id]
+                                );
 
-                                        // Record token mention
-                                        await this.dbRun(
-                                            `INSERT OR IGNORE INTO token_mentions 
-                                            (tweet_id, token_address) 
-                                            VALUES (?, ?)`,
-                                            [tweet.id, address]
-                                        );
+                                // Record token mention
+                                await this.dbRun(
+                                    `INSERT OR IGNORE INTO token_mentions 
+                                    (tweet_id, token_address) 
+                                    VALUES (?, ?)`,
+                                    [tweet.id, address]
+                                );
 
-                                        // Send notification only for new mentions
-                                        await this.sendSolanaNotification({
-                                            tweet_id: tweet.id,
-                                            address,
-                                            author_id: tweet.author_id,
-                                            tweet_text: tweet.text,
+                                // Send notification only for new mentions
+                                await this.sendSolanaNotification({
+                                    tweet_id: tweet.id,
+                                    address,
+                                    author_id: tweet.author_id,
+                                    tweet_text: tweet.text,
                                             includes,
                                             tokenInfo
-                                        });
+                                });
                                     }
-                                }
                             }
                         }
                     }
+                }
 
-                    // Send tweet notification based on type
-                    if (account.monitoring_type === 'tweet' || account.monitoring_type === 'vip') {
-                        await this.sendTweetNotification({
-                            ...tweet,
-                            includes,
-                            is_vip: account.monitoring_type === 'vip'
-                        });
+                // Send tweet notification based on type
+                if (account.monitoring_type === 'tweet' || account.monitoring_type === 'vip') {
+                    await this.sendTweetNotification({
+                        ...tweet,
+                        includes,
+                        is_vip: account.monitoring_type === 'vip'
+                    });
                     }
                 }
 
@@ -1169,28 +1089,28 @@ class TwitterMonitorBot {
             let userInfo;
             try {
                 userInfo = await this.twitter.v2.userByUsername(username, {
-                    'user.fields': ['id', 'username', 'name', 'profile_image_url']
+                        'user.fields': ['id', 'username', 'name', 'profile_image_url']
                 });
             } catch (error) {
-                return await interaction.editReply({
-                    embeds: [{
+                    return await interaction.editReply({
+                        embeds: [{
                         title: '❌ Error',
                         description: `Could not find Twitter account @${username}`,
-                        color: 0xFF0000,
-                        footer: {
-                            text: 'built by keklabs',
-                            icon_url: 'https://media.discordapp.net/attachments/1337565019218378864/1342687517719269489/ddd006d6-fef8-46c4-83eb-5faa63887089.png'
-                        }
-                    }]
-                });
-            }
+                            color: 0xFF0000,
+                            footer: {
+                                text: 'built by keklabs',
+                                icon_url: 'https://media.discordapp.net/attachments/1337565019218378864/1342687517719269489/ddd006d6-fef8-46c4-83eb-5faa63887089.png'
+                            }
+                        }]
+                    });
+                }
 
             if (!userInfo?.data) {
-                return await interaction.editReply({
-                    embeds: [{
+                    return await interaction.editReply({
+                        embeds: [{
                         title: '❌ Error',
                         description: `Could not find Twitter account @${username}`,
-                        color: 0xFF0000,
+                            color: 0xFF0000,
                         footer: {
                             text: 'built by keklabs',
                             icon_url: 'https://media.discordapp.net/attachments/1337565019218378864/1342687517719269489/ddd006d6-fef8-46c4-83eb-5faa63887089.png'
@@ -1201,24 +1121,24 @@ class TwitterMonitorBot {
 
             try {
                 // Check if already monitoring by username and type
-                const existingAccount = await this.dbGet(
+            const existingAccount = await this.dbGet(
                     'SELECT * FROM monitored_accounts WHERE twitter_id = ? AND monitor_type = ?',
                     [userInfo.data.id, type]
-                );
+            );
 
-                if (existingAccount) {
-                    return await interaction.editReply({
-                        embeds: [{
-                            title: 'Already Monitoring',
+            if (existingAccount) {
+                return await interaction.editReply({
+                    embeds: [{
+                        title: 'Already Monitoring',
                             description: `Already monitoring @${username} for ${type === 'solana' ? 'Solana addresses' : 'tweets'}`,
-                            color: 0x9945FF,
-                            footer: {
-                                text: 'built by keklabs',
-                                icon_url: 'https://media.discordapp.net/attachments/1337565019218378864/1342687517719269489/ddd006d6-fef8-46c4-83eb-5faa63887089.png'
-                            }
-                        }]
-                    });
-                }
+                        color: 0x9945FF,
+                        footer: {
+                            text: 'built by keklabs',
+                            icon_url: 'https://media.discordapp.net/attachments/1337565019218378864/1342687517719269489/ddd006d6-fef8-46c4-83eb-5faa63887089.png'
+                        }
+                    }]
+                });
+            }
 
                 // Add account to database
                 await this.dbRun(
@@ -1277,20 +1197,20 @@ class TwitterMonitorBot {
                     : "An error occurred while processing the command";
 
                 await interaction.editReply({
-                    embeds: [{
+                        embeds: [{
                         title: "Command Error",
                         description: `❌ ${errorMessage}`,
-                        color: 0xFF0000,
-                        footer: {
+                            color: 0xFF0000,
+                            footer: {
                             text: "built by keklabs",
                             icon_url: "https://media.discordapp.net/attachments/1337565019218378864/1342687517719269489/ddd006d6-fef8-46c4-83eb-5faa63887089.png"
-                        }
-                    }]
-                });
+                            }
+                        }]
+                    });
             }
         } catch (error) {
             console.error('[ERROR] Monitor command error:', error);
-            
+
             await interaction.editReply({
                 embeds: [{
                     title: "Command Error",
@@ -1389,7 +1309,7 @@ class TwitterMonitorBot {
     async handleTrendingCommand(interaction) {
         try {
             await interaction.deferReply();
-            
+
             console.log('[DEBUG] Fetching trending tokens...');
             const tokens = await this.birdeyeService.getTrendingTokens();
             
@@ -2019,8 +1939,69 @@ class TwitterMonitorBot {
     }
 
     async registerCommands() {
-        // ... existing code ...
-        await this.client.application?.commands.create({
+        try {
+            console.log('🔄 Registering slash commands...');
+            
+            const commands = [
+                {
+                    name: 'monitor',
+                    description: 'Start monitoring a Twitter account',
+                    options: [
+                        {
+                            name: 'twitter_id',
+                            description: 'Twitter username to monitor',
+                            type: 3,
+                            required: true
+                        },
+                        {
+                            name: 'type',
+                            description: 'Type of monitoring',
+                            type: 3,
+                            required: true,
+                            choices: [
+                                { name: 'Tweets', value: 'tweet' },
+                                { name: 'Solana Addresses', value: 'solana' }
+                            ]
+                        }
+                    ]
+                },
+                {
+                    name: 'stopm',
+                    description: 'Stop monitoring a Twitter account',
+                    options: [
+                        {
+                            name: 'twitter_id',
+                            description: 'Twitter username to stop monitoring',
+                            type: 3,
+                            required: true
+                        }
+                    ]
+                },
+                {
+                    name: 'list',
+                    description: 'List all monitored accounts and wallets'
+                },
+                {
+                    name: 'test',
+                    description: 'Test notifications in all channels'
+                },
+                {
+                    name: 'help',
+                    description: 'Show available commands and usage'
+                },
+                {
+                    name: 'vipmonitor',
+                    description: 'Start monitoring a VIP Twitter account',
+                    options: [
+                        {
+                            name: 'twitter_id',
+                            description: 'Twitter username to monitor as VIP',
+                            type: 3,
+                            required: true
+                        }
+                    ]
+                },
+                {
             name: 'trackwallet',
             description: 'Track a Solana wallet',
             options: [
@@ -2037,9 +2018,8 @@ class TwitterMonitorBot {
                     required: true
                 }
             ]
-        });
-
-        await this.client.application?.commands.create({
+                },
+                {
             name: 'stopwallet',
             description: 'Stop tracking a wallet',
             options: [
@@ -2050,8 +2030,138 @@ class TwitterMonitorBot {
                     required: true
                 }
             ]
-        });
-        // ... existing code ...
+                },
+                {
+                    name: 'trending',
+                    description: 'Show trending tokens'
+                },
+                {
+                    name: 'gainers',
+                    description: 'Show top gainers',
+                    options: [
+                        {
+                            name: 'timeframe',
+                            description: 'Timeframe for gains',
+                            type: 3,
+                            required: false,
+                            choices: [
+                                { name: '1 Hour', value: '1h' },
+                                { name: '24 Hours', value: '24h' },
+                                { name: '7 Days', value: '7d' }
+                            ]
+                        }
+                    ]
+                },
+                {
+                    name: 'losers',
+                    description: 'Show top losers',
+                    options: [
+                        {
+                            name: 'timeframe',
+                            description: 'Timeframe for losses',
+                            type: 3,
+                            required: false,
+                            choices: [
+                                { name: '1 Hour', value: '1h' },
+                                { name: '24 Hours', value: '24h' },
+                                { name: '7 Days', value: '7d' }
+                            ]
+                        }
+                    ]
+                },
+                {
+                    name: 'newpairs',
+                    description: 'Show new trading pairs',
+                    options: [
+                        {
+                            name: 'hours',
+                            description: 'Hours to look back',
+                            type: 4,
+                            required: false
+                        }
+                    ]
+                },
+                {
+                    name: 'volume',
+                    description: 'Show volume leaders',
+                    options: [
+                        {
+                            name: 'timeframe',
+                            description: 'Timeframe for volume',
+                            type: 3,
+                            required: false,
+                            choices: [
+                                { name: '1 Hour', value: '1h' },
+                                { name: '24 Hours', value: '24h' },
+                                { name: '7 Days', value: '7d' }
+                            ]
+                        }
+                    ]
+                },
+                {
+                    name: 'security',
+                    description: 'Show token security analysis',
+                    options: [
+                        {
+                            name: 'address',
+                            description: 'Token address to analyze',
+                            type: 3,
+                            required: true
+                        }
+                    ]
+                },
+                {
+                    name: 'metrics',
+                    description: 'Show detailed token metrics',
+                    options: [
+                        {
+                            name: 'address',
+                            description: 'Token address to analyze',
+                            type: 3,
+                            required: true
+                        }
+                    ]
+                },
+                {
+                    name: 'holders',
+                    description: 'Show token holder information',
+                    options: [
+                        {
+                            name: 'address',
+                            description: 'Token address to analyze',
+                            type: 3,
+                            required: true
+                        }
+                    ]
+                },
+                {
+                    name: 'smsalert',
+                    description: 'Register for SMS alerts',
+                    options: [
+                        {
+                            name: 'phone',
+                            description: 'Phone number (international format)',
+                            type: 3,
+                            required: true
+                        }
+                    ]
+                },
+                {
+                    name: 'stopsms',
+                    description: 'Unsubscribe from SMS alerts'
+                }
+            ];
+
+            // Register all commands
+            for (const command of commands) {
+                await this.client.application?.commands.create(command);
+            }
+
+            console.log('✅ Slash commands registered successfully');
+        } catch (error) {
+            console.error('❌ Error registering commands:', error);
+            throw error;
+        }
     }
 
     async handleCommand(interaction) {
@@ -2253,13 +2363,13 @@ class TwitterMonitorBot {
                 });
                 return;
             }
-
+            
             // Check if wallet is already being tracked
             const existingWallet = await this.dbGet(
                 'SELECT * FROM monitored_wallets WHERE wallet_address = ?',
                 [wallet]
             );
-
+            
             if (existingWallet) {
                 await interaction.editReply({
                     embeds: [{
@@ -2301,29 +2411,146 @@ class TwitterMonitorBot {
                 
                 // Remove wallet from database if Helius sync fails
                 await this.dbRun(
-                    'DELETE FROM monitored_wallets WHERE wallet_address = ?',
-                    [wallet]
-                );
-                
+                'DELETE FROM monitored_wallets WHERE wallet_address = ?',
+                [wallet]
+            );
+            
                 await interaction.editReply({
                     embeds: [{
                         title: '❌ Tracking Setup Failed',
                         description: 'Failed to set up wallet tracking. Please try again later.',
                         color: 0xFF0000,
-                        footer: {
-                            text: "built by keklabs",
-                            icon_url: "https://media.discordapp.net/attachments/1337565019218378864/1342687517719269489/ddd006d6-fef8-46c4-83eb-5faa63887089.png"
+                footer: {
+                    text: "built by keklabs",
+                    icon_url: "https://media.discordapp.net/attachments/1337565019218378864/1342687517719269489/ddd006d6-fef8-46c4-83eb-5faa63887089.png"
                         }
                     }]
                 });
             }
-            
+
         } catch (error) {
             console.error('[ERROR] Error handling track wallet command:', error);
             await interaction.editReply({
                 embeds: [{
                     title: '❌ Command Error',
                     description: 'Failed to track wallet. Please try again.',
+                    color: 0xFF0000,
+                    footer: {
+                        text: "built by keklabs",
+                        icon_url: "https://media.discordapp.net/attachments/1337565019218378864/1342687517719269489/ddd006d6-fef8-46c4-83eb-5faa63887089.png"
+                    }
+                }]
+            });
+        }
+    }
+
+    // Handle webhook events from Helius
+    async handleWebhook(data) {
+        if (!data || !data.events || !Array.isArray(data.events)) {
+            console.log('[DEBUG] Invalid webhook data received');
+                    return;
+                }
+
+        console.log(`[DEBUG] Processing ${data.events.length} webhook events`);
+
+        for (const event of data.events) {
+            try {
+                const swapData = this.helius.parseSwapTransaction(event);
+                if (!swapData) continue;
+
+                // Check if swap value meets minimum threshold
+                if (swapData.usdValue < this.config.helius.minSwapValue) {
+                    console.log(`[DEBUG] Skipping swap with value $${swapData.usdValue} (below minimum ${this.config.helius.minSwapValue})`);
+                    continue;
+                }
+
+                await this.handleWalletNotification(swapData);
+                } catch (error) {
+                console.error('[ERROR] Error processing webhook event:', error);
+            }
+        }
+    }
+
+    async testNotifications(interaction) {
+        try {
+            await interaction.deferReply();
+
+            // Test Discord channel access
+            const channels = [
+                { name: 'Tweets', id: this.state.channels.tweets },
+                { name: 'Solana', id: this.state.channels.solana },
+                { name: 'VIP', id: this.state.channels.vip },
+                { name: 'Wallets', id: this.state.channels.wallets }
+            ];
+
+            const results = [];
+            for (const channel of channels) {
+                try {
+                    const discordChannel = this.state.guild.channels.cache.get(channel.id);
+                    if (!discordChannel) {
+                        results.push(`❌ ${channel.name}: Channel not found`);
+                        continue;
+                    }
+
+                    await discordChannel.send({
+                        embeds: [{
+                            title: '🧪 Test Message',
+                            description: 'This is a test notification. If you can see this, notifications are working!',
+                            color: 0x00FF00,
+                footer: {
+                    text: "built by keklabs",
+                    icon_url: "https://media.discordapp.net/attachments/1337565019218378864/1342687517719269489/ddd006d6-fef8-46c4-83eb-5faa63887089.png"
+                            }
+                        }]
+                    });
+                    results.push(`✅ ${channel.name}: Notifications working`);
+                } catch (error) {
+                    results.push(`❌ ${channel.name}: ${error.message}`);
+                }
+            }
+
+            // Test SMS if configured
+            let smsResult = '❔ SMS: Not configured';
+            if (this.config.twilio.enabled) {
+                try {
+                    const subscriber = await this.dbGet(
+                        'SELECT phone_number FROM sms_subscribers WHERE discord_user_id = ?',
+                        [interaction.user.id]
+                    );
+
+                    if (subscriber) {
+                        const sent = await this.sendSMSAlert(
+                            'This is a test SMS notification from Twitter Monitor Bot.',
+                            subscriber.phone_number,
+                            interaction.user.id
+                        );
+                        smsResult = sent ? '✅ SMS: Test message sent' : '❌ SMS: Failed to send';
+            } else {
+                        smsResult = '❌ SMS: No subscription found';
+            }
+        } catch (error) {
+                    smsResult = `❌ SMS: ${error.message}`;
+                }
+            }
+
+            // Send test results
+            await interaction.editReply({
+                embeds: [{
+                    title: '🧪 Test Results',
+                    description: [...results, '', smsResult].join('\n'),
+                    color: results.every(r => r.includes('✅')) ? 0x00FF00 : 0xFF0000,
+                    footer: {
+                        text: "built by keklabs",
+                        icon_url: "https://media.discordapp.net/attachments/1337565019218378864/1342687517719269489/ddd006d6-fef8-46c4-83eb-5faa63887089.png"
+                    }
+                }]
+            });
+        } catch (error) {
+            console.error('[ERROR] Test command error:', error);
+            await interaction.editReply({
+                embeds: [{
+                    title: "Test Failed",
+                    description: `❌ Error running tests: ${error.message}`,
                     color: 0xFF0000,
                     footer: {
                         text: "built by keklabs",
