@@ -419,16 +419,17 @@ class TwitterMonitorBot {
     }
 
     async getMonitoredAccounts() {
-        return await this.dbAll(
-            `SELECT 
-                twitter_id, 
-                username, 
-                monitor_type, 
-                last_tweet_id,
-                profile_data,
-                is_vip
-            FROM monitored_accounts`
-        );
+        const sql = `SELECT 
+            twitter_id, 
+            username, 
+            monitor_type, 
+            last_tweet_id,
+            profile_data,
+            is_vip
+        FROM monitored_accounts`;
+        
+        console.log('[DEBUG] Running getMonitoredAccounts query:', sql);
+        return await this.dbAll(sql);
     }
 
     async checkAccount(account) {
