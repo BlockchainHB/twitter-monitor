@@ -5,6 +5,8 @@ const HeliusService = require('./core/HeliusService');
 const DexScreenerService = require('./core/DexScreenerService');
 const BirdeyeService = require('./core/BirdeyeService');
 const { Client, GatewayIntentBits } = require('discord.js');
+const express = require('express');
+const bodyParser = require('body-parser');
 
 // Set production environment if not set
 if (!process.env.NODE_ENV) {
@@ -28,6 +30,39 @@ function logMemoryUsage() {
     for (let key in used) {
         console.log(`${key}: ${Math.round(used[key] / 1024 / 1024 * 100) / 100} MB`);
     }
+}
+
+async function setupWebhookServer(bot) {
+    const app = express();
+    app.use(bodyParser.json());
+
+    // Helius webhook endpoint
+    app.post('/webhook/helius', async (req, res) => {
+        try {
+            console.log('[DEBUG] Received Helius webhook:', JSON.stringify(req.body, null, 2));
+            
+            // Process webhook data
+            if (bot && bot.helius) {
+                await bot.helius.handleWebhook(req.body);
+            }
+            
+            res.status(200).json({ status: 'success' });
+        } catch (error) {
+            console.error('[ERROR] Failed to process Helius webhook:', error);
+            res.status(500).json({ error: 'Internal server error' });
+        }
+    });
+
+    // Health check endpoint
+    app.get('/health', (req, res) => {
+        res.status(200).json({ status: 'healthy' });
+    });
+
+    // Start server
+    const port = process.env.PORT || 3000;
+    app.listen(port, () => {
+        console.log(`[DEBUG] Webhook server listening on port ${port}`);
+    });
 }
 
 async function initializeBot() {
@@ -64,6 +99,10 @@ async function initializeBot() {
         // Initialize bot and start monitoring
         await bot.initialize();
         console.log('Bot initialization complete');
+
+        // Setup webhook server
+        await setupWebhookServer(bot);
+        console.log('Webhook server initialized');
 
         // Log memory usage
         logMemoryUsage();

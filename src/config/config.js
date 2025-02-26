@@ -60,7 +60,6 @@ const config = {
         maxTweetsPerAccount: parseInt(process.env.MAX_TWEETS_PER_ACCOUNT) || 5
     },
     twilio: {
-        enabled: process.env.TWILIO_ENABLED === 'true',
         accountSid: process.env.TWILIO_ACCOUNT_SID || '',
         authToken: process.env.TWILIO_AUTH_TOKEN || '',
         phoneNumber: process.env.TWILIO_PHONE_NUMBER || ''
@@ -84,13 +83,9 @@ function validateConfig() {
     const required = {
         twitter: ['apiKey', 'apiKeySecret', 'bearerToken', 'accessToken', 'accessTokenSecret'],
         discord: ['token', 'clientId', 'guildId'],
-        helius: ['apiKey', 'webhookUrl']
+        helius: ['apiKey', 'webhookUrl'],
+        twilio: ['accountSid', 'authToken', 'phoneNumber']
     };
-
-    // Optional Twilio validation only if any Twilio config is present
-    if (config.twilio.accountSid || config.twilio.authToken || config.twilio.phoneNumber) {
-        required.twilio = ['accountSid', 'authToken', 'phoneNumber'];
-    }
 
     for (const [section, fields] of Object.entries(required)) {
         for (const field of fields) {

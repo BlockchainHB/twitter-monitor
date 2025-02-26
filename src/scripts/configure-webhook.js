@@ -94,7 +94,7 @@ class WebhookConfigurator {
             const payload = {
                 webhookURL: this.webhookUrl,
                 accountAddresses: addresses,
-                transactionTypes: ['SWAP'],
+                transactionTypes: ['SWAP', 'TRANSFER'],
                 webhookType: 'enhanced',
                 encoding: 'jsonParsed'
             };
@@ -131,7 +131,7 @@ class WebhookConfigurator {
             const payload = {
                 webhookURL: this.webhookUrl,
                 accountAddresses: addresses,
-                transactionTypes: ['SWAP'],
+                transactionTypes: ['SWAP', 'TRANSFER'],
                 webhookType: 'enhanced',
                 encoding: 'jsonParsed'
             };

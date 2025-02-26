@@ -60,6 +60,10 @@ class BirdeyeService {
 
         // Minimal blacklist for major tokens
         this.blacklist = ['SOL', 'USDC', 'USDT', 'JUP', 'WBTC', 'WETH'];
+
+        // Simple cache for token info
+        this.tokenInfoCache = new Map();
+        this.CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
     }
 
     // Simple token filtering
@@ -770,31 +774,24 @@ ${priceChangeEmoji} 24h Change: ${priceChangeSymbol}${this.formatNumber(priceCha
 
     async getTokenInfo(address) {
         try {
-            const result = await this.rateLimitManager.scheduleRequest(
-                async () => {
-                    console.log('[DEBUG] Making Birdeye API request for token info...');
-                    const response = await axios.get(`${this.baseUrl}/defi/token_overview`, {
-                        headers: {
-                            ...this.headers,
-                            'x-chain': 'solana'
-                        },
-                        params: { 
-                            address: address
-                        }
-                    });
-                    console.log('[DEBUG] Birdeye API token info response status:', response.status);
-                    return response.data;
-                },
-                'birdeye/token'
-            );
+            // Check cache first
+            const cached = this.tokenInfoCache.get(address);
+            const now = Date.now();
+            if (cached && (now - cached.timestamp) < this.CACHE_DURATION) {
+                return cached.data;
+            }
 
-            if (!result?.success || !result?.data) {
-                console.log('[DEBUG] No token data found');
+            // If not in cache or expired, fetch from API
+            const response = await axios.get(`https://public-api.birdeye.so/public/token_info?address=${address}`);
+            const tokenData = response?.data?.data;
+
+            if (!tokenData) {
+                console.log(`[Cache Miss] No data for token ${address}`);
                 return null;
             }
 
-            const tokenData = result.data;
-            return {
+            // Format and cache the data
+            const formattedData = {
                 name: tokenData.name || 'Unknown',
                 symbol: tokenData.symbol || 'UNKNOWN',
                 price: parseFloat(tokenData.price || 0),
@@ -811,13 +808,20 @@ ${priceChangeEmoji} 24h Change: ${priceChangeSymbol}${this.formatNumber(priceCha
                     (tokenData.buy24h / tokenData.trade24h * 100) : 50,
                 social: tokenData.extensions || {},
                 logoURI: tokenData.logoURI,
-                // Additional memecoin-relevant metrics
                 priceChange1h: parseFloat(tokenData.priceChange1hPercent || 0),
                 priceChange4h: parseFloat(tokenData.priceChange4hPercent || 0),
                 uniqueWallets1h: parseInt(tokenData.uniqueWallet1h || 0),
                 uniqueWalletChange1h: parseFloat(tokenData.uniqueWallet1hChangePercent || 0),
                 volumeChange24h: parseFloat(tokenData.v24hChangePercent || 0)
             };
+
+            // Store in cache
+            this.tokenInfoCache.set(address, {
+                timestamp: now,
+                data: formattedData
+            });
+
+            return formattedData;
         } catch (error) {
             console.error('[ERROR] Error fetching token info:', error.message);
             return null;
