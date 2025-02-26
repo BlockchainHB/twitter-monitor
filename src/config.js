@@ -7,7 +7,9 @@ module.exports = {
         guildId: process.env.DISCORD_GUILD_ID,
         channels: {
             tweets: process.env.TWEETS_CHANNEL_ID,
-            solana: process.env.SOLANA_CHANNEL_ID
+            solana: process.env.SOLANA_CHANNEL_ID,
+            vip: process.env.VIP_CHANNEL_ID,
+            wallets: process.env.WALLETS_CHANNEL_ID
         }
     },
     twitter: {
