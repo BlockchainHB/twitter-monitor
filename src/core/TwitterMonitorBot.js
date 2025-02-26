@@ -2587,6 +2587,20 @@ class TwitterMonitorBot {
             });
         }
     }
+
+    async updateLastTweetId(twitterId, lastTweetId) {
+        await this.dbRun({
+            sql: 'UPDATE monitored_accounts SET last_tweet_id = ? WHERE twitter_id = ?',
+            params: [lastTweetId, twitterId]
+        });
+    }
+
+    async updateAccountAfterCheck(twitterId, lastTweetId) {
+        await this.dbRun({
+            sql: 'UPDATE monitored_accounts SET last_tweet_id = ? WHERE twitter_id = ?',
+            params: [lastTweetId, twitterId]
+        });
+    }
 } // End of class TwitterMonitorBot
 
 module.exports = TwitterMonitorBot;
