@@ -71,67 +71,59 @@ class TwitterMonitorBot {
         try {
             console.log('🚀 Initializing TwitterMonitorBot...');
             
-            // Step 1: Initialize Discord client with ready event
+            // Step 1: Login and wait for ready
             console.log('🔄 Logging into Discord...');
-            await new Promise((resolve, reject) => {
-                const timeout = setTimeout(() => {
-                    this.client.removeAllListeners('ready');
-                    reject(new Error('Discord client login timed out after 30 seconds'));
-                }, 30000);
+            await this.client.login(this.config.discord.token);
+            console.log('✅ Login successful');
 
-                this.client.once('ready', async () => {
-                    try {
-                        clearTimeout(timeout);
-                        console.log('✅ Discord client ready');
-                        
-                        // Get guild and store channels
-                        this.state.guild = this.client.guilds.cache.get(this.config.discord.guildId);
-                        if (!this.state.guild) {
-                            throw new Error('Guild not found');
-                        }
-                        console.log('✅ Guild found');
-
-                        // Store channel references
-                        this.state.channels = {
-                            tweets: this.config.discord.channels.tweets,
-                            solana: this.config.discord.channels.solana,
-                            vip: this.config.discord.channels.vip,
-                            wallets: this.config.discord.channels.wallets
-                        };
-                        console.log('✅ Channel references stored');
-
-                        // Register commands only after client is fully ready
-                        try {
-                            console.log('🔄 Registering slash commands...');
-                            await this.registerCommands();
-                            console.log('✅ Commands registered successfully');
-                        } catch (cmdError) {
-                            console.error('❌ Error registering commands:', cmdError);
-                            reject(cmdError);
-                            return;
-                        }
-
-                        resolve();
-                    } catch (error) {
-                        reject(error);
-                    }
-                });
-
-                this.client.login(this.config.discord.token).catch(reject);
+            // Step 2: Wait for client to be fully ready
+            await new Promise((resolve) => {
+                if (this.client.isReady()) {
+                    resolve();
+                } else {
+                    this.client.once('ready', () => resolve());
+                }
             });
+            console.log('✅ Discord client ready');
 
-            // Step 2: Setup command handling
+            // Step 3: Get guild
+            this.state.guild = await this.client.guilds.fetch(this.config.discord.guildId);
+            if (!this.state.guild) {
+                throw new Error('Guild not found');
+            }
+            console.log('✅ Guild found');
+
+            // Step 4: Store channel references
+            this.state.channels = {
+                tweets: this.config.discord.channels.tweets,
+                solana: this.config.discord.channels.solana,
+                vip: this.config.discord.channels.vip,
+                wallets: this.config.discord.channels.wallets
+            };
+            console.log('✅ Channel references stored');
+
+            // Step 5: Setup command handling first
             this.setupCommandHandling();
             console.log('✅ Command handling setup complete');
 
-            // Step 3: Start monitoring if there are accounts to monitor
+            // Step 6: Register commands
+            try {
+                console.log('🔄 Registering slash commands...');
+                await this.registerCommands();
+                console.log('✅ Commands registered successfully');
+            } catch (cmdError) {
+                console.error('❌ Error registering commands:', cmdError);
+                throw cmdError;
+            }
+
+            // Step 7: Start monitoring if there are accounts to monitor
             const accounts = await this.getMonitoredAccounts();
             if (accounts.length > 0) {
                 await this.startMonitoring();
                 console.log(`✅ Monitoring started for ${accounts.length} accounts`);
             }
 
-            // Step 4: Setup Helius webhook if needed
+            // Step 8: Setup Helius webhook if needed
             await this.setupHeliusWebhook();
             console.log('✅ Helius webhook setup complete');
 
