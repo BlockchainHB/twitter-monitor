@@ -447,6 +447,74 @@ class TwitterMonitorBot {
         }
     }
 
+    async registerCommands() {
+        if (!this.client.application) {
+            console.error('Client application is not ready');
+            return;
+        }
+
+        try {
+            console.log('🔄 Registering slash commands...');
+            
+            const commands = [
+                {
+                    name: 'monitor',
+                    description: 'Start monitoring a Twitter account',
+                    options: [
+                        {
+                            name: 'twitter_id',
+                            description: 'Twitter username to monitor',
+                            type: ApplicationCommandOptionType.String,
+                            required: true
+                        },
+                        {
+                            name: 'type',
+                            description: 'Type of monitoring',
+                            type: ApplicationCommandOptionType.String,
+                            required: true,
+                            choices: [
+                                { name: 'Tweets', value: 'tweet' },
+                                { name: 'Solana Addresses', value: 'solana' }
+                            ]
+                        }
+                    ]
+                },
+                {
+                    name: 'stopm',
+                    description: 'Stop monitoring a Twitter account',
+                    options: [
+                        {
+                            name: 'twitter_id',
+                            description: 'Twitter username to stop monitoring',
+                            type: ApplicationCommandOptionType.String,
+                            required: true
+                        }
+                    ]
+                },
+                {
+                    name: 'list',
+                    description: 'List all monitored accounts'
+                },
+                {
+                    name: 'test',
+                    description: 'Test notifications'
+                },
+                {
+                    name: 'help',
+                    description: 'Show available commands'
+                }
+            ];
+
+            // Register commands with Discord
+            await this.client.application.commands.set(commands);
+            console.log('✅ Commands registered successfully');
+
+        } catch (error) {
+            console.error('Error registering commands:', error);
+            throw error;
+        }
+    }
+
 } // End of class TwitterMonitorBot
 
 module.exports = TwitterMonitorBot;
