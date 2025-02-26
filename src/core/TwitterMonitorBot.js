@@ -106,11 +106,23 @@ class TwitterMonitorBot {
             // Create index for username lookups
             await this.dbRun('CREATE INDEX IF NOT EXISTS idx_monitored_accounts_username ON monitored_accounts(username)');
 
-            // Initialize Discord client
-            await this.client.login(this.config.discord.token);
+            // Initialize Discord client with ready event
+            await new Promise((resolve, reject) => {
+                const timeout = setTimeout(() => {
+                    reject(new Error('Discord client login timed out after 30 seconds'));
+                }, 30000);
+
+                this.client.once('ready', () => {
+                    clearTimeout(timeout);
+                    resolve();
+                });
+
+                this.client.login(this.config.discord.token).catch(reject);
+            });
             console.log('✅ Bot logged in successfully');
 
             // Register commands
+            console.log('🔄 Registering slash commands...');
             await this.registerCommands();
             console.log('✅ Commands registered');
 

@@ -168,18 +168,31 @@ const commands = [
 async function registerCommands(client = null) {
     try {
         console.log('Started refreshing application (/) commands.');
+        
+        if (!config.discord.guildId) {
+            throw new Error('Discord guild ID is required for registering commands');
+        }
 
         // Use provided client or create new REST instance
         const rest = client ? client.rest : new REST({ version: '10' }).setToken(config.discord.token);
 
-        await rest.put(
+        // Add timeout to the registration process
+        const timeoutPromise = new Promise((_, reject) => {
+            setTimeout(() => reject(new Error('Command registration timed out after 30 seconds')), 30000);
+        });
+
+        const registrationPromise = rest.put(
             Routes.applicationGuildCommands(config.discord.clientId, config.discord.guildId),
             { body: commands }
         );
 
+        await Promise.race([registrationPromise, timeoutPromise]);
         console.log('Successfully reloaded application (/) commands.');
     } catch (error) {
         console.error('Error registering commands:', error);
+        if (error.code === 50001) {
+            console.error('Bot lacks permissions to create commands. Please reinvite the bot with proper permissions.');
+        }
         throw error;
     }
 }
