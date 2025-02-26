@@ -6,7 +6,15 @@ const HeliusService = require('./core/HeliusService');
 const DexScreenerService = require('./core/DexScreenerService');
 const BirdeyeService = require('./core/BirdeyeService');
 const { initializeDatabase } = require('./database/init');
-const sqlite3 = require('@vscode/sqlite3');
+const sqlite3 = require('sqlite3').verbose();
+const path = require('path');
+const fs = require('fs').promises;
+const { Client, GatewayIntentBits } = require('discord.js');
+
+// Set production environment if not set
+if (!process.env.NODE_ENV) {
+    process.env.NODE_ENV = 'production';
+}
 
 // Debug logging setup
 process.env.DEBUG = '*';
@@ -27,6 +35,103 @@ function logMemoryUsage() {
     }
 }
 
+// Global error handler for promises
+process.on('unhandledRejection', (error) => {
+    console.error('🚨 Unhandled Promise Rejection:', error);
+});
+
+async function initializeBot() {
+    try {
+        console.log('Environment:', process.env.NODE_ENV);
+        console.log('Database path:', config.database.path);
+        console.log('Monitoring interval:', config.monitoring.interval, 'ms');
+
+        // Initialize database
+        const { db } = await initializeDatabase();
+        if (!db) throw new Error('Failed to initialize database');
+
+        // Initialize services
+        const rateLimitManager = new RateLimitManager(config.twitter.rateLimit);
+        const heliusService = new HeliusService(config.helius.apiKey, db);
+        const birdeyeService = new BirdeyeService();
+        const dexScreenerService = new DexScreenerService();
+
+        // Create Discord client
+        const client = new Client({
+            intents: [
+                GatewayIntentBits.Guilds,
+                GatewayIntentBits.GuildMessages,
+                GatewayIntentBits.MessageContent
+            ]
+        });
+
+        // Initialize bot
+        const bot = new TwitterMonitorBot({
+            client,
+            config,
+            db,
+            rateLimitManager,
+            services: {
+                helius: heliusService,
+                birdeye: birdeyeService,
+                dexscreener: dexScreenerService
+            }
+        });
+
+        // Initialize bot and start monitoring
+        await bot.initialize();
+        console.log('Bot initialization complete');
+
+        // Log memory usage
+        const used = process.memoryUsage();
+        console.log('Memory usage:');
+        for (let key in used) {
+            console.log(`${key}: ${Math.round(used[key] / 1024 / 1024 * 100) / 100} MB`);
+        }
+
+        return bot;
+    } catch (error) {
+        console.error('Bot initialization failed:', error);
+        throw error;
+    }
+}
+
+async function setupEventHandlers(bot, memoryInterval) {
+    // Enhanced shutdown handling
+    async function handleShutdown(signal) {
+        console.log(`\n📴 Received ${signal} signal, initiating graceful shutdown...`);
+        clearInterval(memoryInterval);
+        
+        try {
+            if (bot && bot.shutdown) {
+                await bot.shutdown();
+            }
+            console.log('✅ Shutdown completed successfully');
+            process.exit(0);
+        } catch (error) {
+            console.error('❌ Error during shutdown:', error);
+            process.exit(1);
+        }
+    }
+
+    // Handle various shutdown signals
+    process.on('SIGINT', () => handleShutdown('SIGINT'));
+    process.on('SIGTERM', () => handleShutdown('SIGTERM'));
+    process.on('SIGUSR2', () => handleShutdown('SIGUSR2'));
+
+    // Discord.js event handlers
+    if (bot.client) {
+        bot.client.on('warn', info => console.log('⚠️ Discord Warning:', info));
+        bot.client.on('error', error => console.error('❌ Discord Error:', error));
+        bot.client.on('debug', info => console.log('🔍 Discord Debug:', info));
+    }
+
+    // Rate limit monitoring
+    if (bot.rateLimitManager) {
+        bot.rateLimitManager.on('debug', info => console.log('📊 Rate Limit Debug:', info));
+    }
+}
+
 async function main() {
     try {
         console.log('\n🚀 Starting Twitter Monitor Bot in DEBUG mode...\n');
@@ -37,51 +142,18 @@ async function main() {
         console.log('- Database Path:', config.database.path);
         console.log('- Monitoring Interval:', config.monitoring.interval, 'ms');
         
-        // Initialize database first
-        console.log('\n📦 Initializing Database...');
-        const { dbFile } = await initializeDatabase();
-        const db = new sqlite3.Database(dbFile, sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE);
-        
-        // Initialize Twitter Rate Limit Manager
-        console.log('\n⚡ Initializing Twitter Rate Limit Manager...');
-        const twitterRateLimitManager = new RateLimitManager({
-            endpoints: config.twitter.rateLimit.endpoints,
-            defaultLimit: config.twitter.rateLimit.defaultLimit,
-            safetyMargin: config.twitter.rateLimit.safetyMargin,
-            batchConfig: config.twitter.rateLimit.batchConfig
-        });
+        // Initialize bot with dependencies
+        const bot = await initializeBot();
+        if (!bot) {
+            throw new Error('Failed to create bot instance');
+        }
 
-        // Initialize services (they handle their own rate limiting internally)
-        console.log('\n🔧 Initializing Services...');
-        
-        // Helius needs both apiKey and db for webhook management
-        const heliusService = new HeliusService(config.helius.apiKey, db);
-        
-        // Initialize BirdeyeService for bot's direct token queries
-        const birdeyeService = new BirdeyeService();
-        
-        // DexScreener creates its own BirdeyeService instance for internal use
-        const dexScreenerService = new DexScreenerService();
-        
-        // Create bot instance with dependencies
-        console.log('\n🤖 Initializing Bot Instance...');
-        const bot = new TwitterMonitorBot({
-            rateLimitManager: twitterRateLimitManager,
-            config,
-            db,
-            services: {
-                helius: heliusService,
-                dexscreener: dexScreenerService,
-                birdeyeService: birdeyeService
-            }
-        });
-
-        // Set up bot and wait for Discord client to be ready
-        console.log('\n📋 Starting Setup Sequence:');
-        await bot.setupBot();
-        
-        // Now that Discord client is ready, register commands
+        // Register Discord commands
         console.log('\n📝 Registering Discord commands...');
+        if (!bot.client) {
+            throw new Error('Discord client not initialized');
+        }
+
         try {
             await registerCommands(bot.client);
             console.log('✅ Commands registered successfully');
@@ -90,49 +162,24 @@ async function main() {
             throw error;
         }
 
-        // Set up periodic memory logging
+        // Set up memory monitoring
         const memoryInterval = setInterval(logMemoryUsage, 60000);
+
+        // Set up event handlers
+        await setupEventHandlers(bot, memoryInterval);
 
         console.log('\n✅ Bot is ready and monitoring!');
         logMemoryUsage();
 
-        // Enhanced shutdown handling
-        async function handleShutdown(signal) {
-            console.log(`\n📴 Received ${signal} signal, initiating graceful shutdown...`);
-            clearInterval(memoryInterval);
-            
-            try {
-                await bot.shutdown();
-                console.log('✅ Shutdown completed successfully');
-                process.exit(0);
-            } catch (error) {
-                console.error('❌ Error during shutdown:', error);
-                process.exit(1);
-            }
-        }
-
-        // Handle various shutdown signals
-        process.on('SIGINT', () => handleShutdown('SIGINT'));
-        process.on('SIGTERM', () => handleShutdown('SIGTERM'));
-        process.on('SIGUSR2', () => handleShutdown('SIGUSR2')); // nodemon restart
-
-        // Log any Discord.js warnings
-        bot.client.on('warn', info => console.log('⚠️ Discord Warning:', info));
-        bot.client.on('error', error => console.error('❌ Discord Error:', error));
-        bot.client.on('debug', info => console.log('🔍 Discord Debug:', info));
-
-        // Rate limit monitoring
-        bot.rateLimitManager.on('debug', info => console.log('📊 Rate Limit Debug:', info));
-
     } catch (error) {
-        console.error('\n❌ Failed to start bot:', error);
+        console.error('\n❌ Fatal error during bot initialization:', error);
         process.exit(1);
     }
 }
 
-// Start the bot with error handling
-console.log('🔄 Initializing...');
+// Start the bot
+console.log('🔄 Starting initialization process...');
 main().catch(error => {
-    console.error('❌ Fatal error during initialization:', error);
+    console.error('❌ Fatal error:', error);
     process.exit(1);
 }); 

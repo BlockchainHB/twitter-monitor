@@ -60,6 +60,11 @@ const config = {
         webhookUrl: process.env.HELIUS_WEBHOOK_URL || '',
         minSwapValue: 100, // Minimum USD value for Discord notifications
         minSmsSwapValue: 1000, // Minimum USD value for SMS notifications
+        webhook: {
+            retryAttempts: 3,
+            retryDelay: 1000,
+            timeoutMs: 5000
+        }
     },
     twilio: {
         accountSid: process.env.TWILIO_ACCOUNT_SID || '',
