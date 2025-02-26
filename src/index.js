@@ -1,6 +1,5 @@
 const TwitterMonitorBot = require('./core/TwitterMonitorBot');
 const config = require('./config/config');
-const { registerCommands } = require('./commands/registerCommands');
 const RateLimitManager = require('./core/RateLimitManager');
 const HeliusService = require('./core/HeliusService');
 const DexScreenerService = require('./core/DexScreenerService');
@@ -146,20 +145,6 @@ async function main() {
         const bot = await initializeBot();
         if (!bot) {
             throw new Error('Failed to create bot instance');
-        }
-
-        // Register Discord commands
-        console.log('\n📝 Registering Discord commands...');
-        if (!bot.client) {
-            throw new Error('Discord client not initialized');
-        }
-
-        try {
-            await registerCommands(bot.client);
-            console.log('✅ Commands registered successfully');
-        } catch (error) {
-            console.error('❌ Failed to register commands:', error);
-            throw error;
         }
 
         // Set up memory monitoring
