@@ -1,5 +1,5 @@
 const { TwitterApi } = require('twitter-api-v2');
-const Database = require('better-sqlite3');
+const sqlite3 = require('sqlite3');
 const { promisify } = require('util');
 const config = require('../config/config');
 const path = require('path');
@@ -80,16 +80,21 @@ class TwitterMonitorBot {
                 console.log('📊 Initializing in-memory database...');
                 
                 // Always use in-memory database for testing
-                this.state.db = new Database(':memory:');
+                this.state.db = await new Promise((resolve, reject) => {
+                    const db = new sqlite3.Database(':memory:', (err) => {
+                        if (err) reject(err);
+                        else resolve(db);
+                    });
+                });
                 console.log('✅ Database connection established');
             } else {
                 console.log('Using provided database connection');
             }
 
             // Set pragmas for better performance
-            this.state.db.pragma('journal_mode = WAL');
-            this.state.db.pragma('synchronous = NORMAL');
-            this.state.db.pragma('foreign_keys = ON');
+            await this.dbRun('PRAGMA journal_mode = WAL');
+            await this.dbRun('PRAGMA synchronous = NORMAL');
+            await this.dbRun('PRAGMA foreign_keys = ON');
             
             // Initialize minimal schema
             const schema = `
@@ -147,7 +152,7 @@ class TwitterMonitorBot {
                 
                 for (const statement of statements) {
                     if (statement) {
-                        this.state.db.exec(statement);
+                        await this.dbRun(statement);
                     }
                 }
                 console.log('✅ Schema initialized successfully');
@@ -211,16 +216,26 @@ class TwitterMonitorBot {
         }
     }
 
-    // Helper method for database operations
+    // Helper method to promisify db.run
     async dbRun(sql, params = []) {
-        return this.state.db.prepare(sql).run(params);
+        return new Promise((resolve, reject) => {
+            this.state.db.run(sql, params, function(err) {
+                if (err) reject(err);
+                else resolve(this);
+            });
+        });
     }
 
     async dbGet(sql, params = [], maxRetries = 3) {
         let lastError;
         for (let attempt = 0; attempt < maxRetries; attempt++) {
             try {
-                return this.state.db.prepare(sql).get(params);
+                return await new Promise((resolve, reject) => {
+                    this.state.db.get(sql, params, (err, row) => {
+                        if (err) reject(err);
+                        else resolve(row);
+                    });
+                });
             } catch (error) {
                 lastError = error;
                 if (error.code === 'SQLITE_BUSY') {
@@ -238,7 +253,12 @@ class TwitterMonitorBot {
         let lastError;
         for (let attempt = 0; attempt < maxRetries; attempt++) {
             try {
-                return this.state.db.prepare(sql).all(params);
+                return await new Promise((resolve, reject) => {
+                    this.state.db.all(sql, params, (err, rows) => {
+                        if (err) reject(err);
+                        else resolve(rows);
+                    });
+                });
             } catch (error) {
                 lastError = error;
                 if (error.code === 'SQLITE_BUSY') {
@@ -255,19 +275,18 @@ class TwitterMonitorBot {
     async dbBatchRun(operations, batchSize = 50) {
         try {
             // Start transaction
-            const transaction = this.state.db.transaction((ops) => {
-                for (const op of ops) {
-                    this.state.db.prepare(op.sql).run(op.params);
-                }
-            });
+            await this.dbRun('BEGIN TRANSACTION');
 
             // Process operations in batches
             for (let i = 0; i < operations.length; i += batchSize) {
                 const batch = operations.slice(i, i + batchSize);
-                transaction(batch);
+                await Promise.all(batch.map(op => this.dbRun(op.sql, op.params)));
             }
+
+            // Commit transaction
+            await this.dbRun('COMMIT');
         } catch (error) {
-            console.error('Error in batch operation:', error);
+            await this.dbRun('ROLLBACK');
             throw error;
         }
     }
