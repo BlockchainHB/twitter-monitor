@@ -100,6 +100,17 @@ class TwitterMonitorBot {
                         };
                         console.log('✅ Channel references stored');
 
+                        // Register commands only after client is fully ready
+                        try {
+                            console.log('🔄 Registering slash commands...');
+                            await this.registerCommands();
+                            console.log('✅ Commands registered successfully');
+                        } catch (cmdError) {
+                            console.error('❌ Error registering commands:', cmdError);
+                            reject(cmdError);
+                            return;
+                        }
+
                         resolve();
                     } catch (error) {
                         reject(error);
@@ -109,23 +120,18 @@ class TwitterMonitorBot {
                 this.client.login(this.config.discord.token).catch(reject);
             });
 
-            // Step 2: Register commands now that we're logged in
-            console.log('🔄 Registering slash commands...');
-            await this.registerCommands();
-            console.log('✅ Commands registered');
-
-            // Step 3: Setup command handling
+            // Step 2: Setup command handling
             this.setupCommandHandling();
             console.log('✅ Command handling setup complete');
 
-            // Step 4: Start monitoring if there are accounts to monitor
+            // Step 3: Start monitoring if there are accounts to monitor
             const accounts = await this.getMonitoredAccounts();
             if (accounts.length > 0) {
                 await this.startMonitoring();
                 console.log(`✅ Monitoring started for ${accounts.length} accounts`);
             }
 
-            // Step 5: Setup Helius webhook if needed
+            // Step 4: Setup Helius webhook if needed
             await this.setupHeliusWebhook();
             console.log('✅ Helius webhook setup complete');
 
@@ -1898,7 +1904,7 @@ class TwitterMonitorBot {
                     'INSERT OR REPLACE INTO helius_webhooks (webhook_id, webhook_url) VALUES (?, ?)',
                     [webhook.webhookId, config.helius.webhookUrl]
                 );
-            } else {
+                            } else {
                 // Create new webhook
                 console.log('🆕 Creating new webhook...');
                 webhook = await this.helius.createWebhook(config.helius.webhookUrl, accountAddresses);
@@ -1911,8 +1917,8 @@ class TwitterMonitorBot {
             console.log('✅ Helius webhook setup complete');
         } catch (error) {
             console.error('❌ Error setting up Helius webhook:', error);
-            throw error;
-        }
+                                throw error;
+                            }
     }
 
     // Remove the polling-based monitorWallets method since we're using webhooks now
@@ -1993,7 +1999,7 @@ class TwitterMonitorBot {
                         }
                     }]
                 });
-            } catch (error) {
+                } catch (error) {
                 console.error('[ERROR] Failed to sync wallets with Helius:', error);
                 
                 // Remove wallet from database if Helius sync fails
@@ -2052,7 +2058,7 @@ class TwitterMonitorBot {
                 }
 
                 await this.handleWalletNotification(swapData);
-                } catch (error) {
+        } catch (error) {
                 console.error('[ERROR] Error processing webhook event:', error);
             }
         }
