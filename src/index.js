@@ -1,6 +1,12 @@
 const TwitterMonitorBot = require('./core/TwitterMonitorBot');
 const config = require('./config/config');
 const { registerCommands } = require('./commands/registerCommands');
+const RateLimitManager = require('./core/RateLimitManager');
+const HeliusService = require('./core/HeliusService');
+const DexScreenerService = require('./core/DexScreenerService');
+const BirdeyeService = require('./core/BirdeyeService');
+const { initializeDatabase } = require('./database/init');
+const sqlite3 = require('@vscode/sqlite3');
 
 // Debug logging setup
 process.env.DEBUG = '*';
@@ -31,9 +37,44 @@ async function main() {
         console.log('- Database Path:', config.database.path);
         console.log('- Monitoring Interval:', config.monitoring.interval, 'ms');
         
-        // Create bot instance first
+        // Initialize database first
+        console.log('\n📦 Initializing Database...');
+        const { dbFile } = await initializeDatabase();
+        const db = new sqlite3.Database(dbFile, sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE);
+        
+        // Initialize Twitter Rate Limit Manager
+        console.log('\n⚡ Initializing Twitter Rate Limit Manager...');
+        const twitterRateLimitManager = new RateLimitManager({
+            endpoints: config.twitter.rateLimit.endpoints,
+            defaultLimit: config.twitter.rateLimit.defaultLimit,
+            safetyMargin: config.twitter.rateLimit.safetyMargin,
+            batchConfig: config.twitter.rateLimit.batchConfig
+        });
+
+        // Initialize services (they handle their own rate limiting internally)
+        console.log('\n🔧 Initializing Services...');
+        
+        // Helius needs both apiKey and db for webhook management
+        const heliusService = new HeliusService(config.helius.apiKey, db);
+        
+        // Initialize BirdeyeService for bot's direct token queries
+        const birdeyeService = new BirdeyeService();
+        
+        // DexScreener creates its own BirdeyeService instance for internal use
+        const dexScreenerService = new DexScreenerService();
+        
+        // Create bot instance with dependencies
         console.log('\n🤖 Initializing Bot Instance...');
-        const bot = new TwitterMonitorBot();
+        const bot = new TwitterMonitorBot({
+            rateLimitManager: twitterRateLimitManager,
+            config,
+            db,
+            services: {
+                helius: heliusService,
+                dexscreener: dexScreenerService,
+                birdeyeService: birdeyeService
+            }
+        });
 
         // Set up bot and wait for Discord client to be ready
         console.log('\n📋 Starting Setup Sequence:');

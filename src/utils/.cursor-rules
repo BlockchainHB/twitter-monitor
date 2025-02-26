@@ -1,0 +1,135 @@
+# Twitter Monitor Discord Bot - Development Guidelines
+
+# Core Architecture
+The application uses a central rate limit management system coordinating all API interactions (Twitter, Helius, etc).
+Single-process model with modular components communicating through well-defined interfaces.
+
+# Required Component Structure
+```javascript
+class ComponentName {
+    constructor(dependencies) {
+        this.validateDependencies(dependencies);
+        this.rateLimitManager = dependencies.rateLimitManager;
+        this.state = this.initializeState();
+    }
+
+    validateDependencies(deps) {
+        if (!deps.rateLimitManager) throw new Error('RateLimitManager required');
+    }
+}
+```
+
+# Database Rules
+1. All schema changes MUST use migrations in src/database/migrations/
+2. Use parameterized queries ALWAYS
+3. Handle SQLite constraints properly
+4. Use WAL mode for performance
+5. SMS subscribers table: discord_user_id as PRIMARY KEY
+6. Migration format:
+```sql
+BEGIN TRANSACTION;
+-- Check migration
+SELECT CASE 
+    WHEN EXISTS (SELECT 1 FROM migrations WHERE name = 'migration_name')
+    THEN RAISE(IGNORE)
+    ELSE (INSERT INTO migrations (name) VALUES ('migration_name'))
+END;
+-- Migration SQL
+COMMIT;
+```
+
+# Rate Limiting Rules
+1. ALL API calls must use RateLimitManager
+2. Include priority information
+3. Handle rate limit errors
+4. Implement exponential backoff
+5. Calculate intervals based on account count
+6. Include safety margins (90% of limit)
+
+# Queue Management
+1. All requests must be queued properly
+2. Assign proper priorities
+3. Include timeout handling
+4. Maintain order within priority levels
+
+# Error Handling Pattern
+```javascript
+async function makeRequest() {
+    try {
+        await this.rateLimitManager.scheduleRequest(/*...*/);
+    } catch (error) {
+        if (error.code === 429) await this.handleRateLimit(error);
+        else await this.handleError(error);
+    }
+}
+```
+
+# State Management
+1. Components track own state
+2. Handle transitions safely
+3. Recover from interruptions
+4. Maintain consistency
+
+# Webhook Management
+1. Verify after creation
+2. Store state in database
+3. Handle rate limits
+4. Regular health checks
+
+# PROHIBITED
+- Direct API calls (bypass RateLimitManager)
+- Ignoring rate limits
+- Skipping queue priority
+- Fixed intervals without calculations
+- Non-parameterized queries
+- Hardcoded credentials
+
+# Required File Structure
+src/
+├── core/           # Core services
+├── database/       # DB migrations & schema
+├── commands/       # Discord commands
+├── config/         # Configuration
+└── tests/          # Test files
+
+# Environment Setup
+Required in .env:
+- Twitter API credentials
+- Discord bot configuration
+- Helius API configuration
+- Channel IDs
+- Optional: Twilio for SMS
+
+# Railway Deployment
+1. Database: /app/data/twitter-monitor.db
+2. Auto-run migrations on start
+3. NODE_ENV=production
+4. Create dirs automatically
+
+# Testing Requirements
+1. Rate limit testing
+2. Integration testing
+3. Command testing
+4. Database migrations testing
+
+# Performance Requirements
+1. Minimize API calls (queue/batch)
+2. Use caching where appropriate
+3. Monitor rate limits
+4. Log performance metrics
+
+# Documentation Requirements
+1. Rate limit explanations
+2. Queue management details
+3. Priority handling
+4. Error recovery procedures
+
+# Best Practices
+1. Calculate intervals dynamically
+2. Use safety margins
+3. Implement proper queuing
+4. Add comprehensive logging
+5. Monitor rate limits
+6. Verify webhook health
+7. Use parameterized queries
+8. Handle all error cases 

@@ -45,15 +45,22 @@ class HeliusService {
     }
 
     // Sync wallets with Helius webhook
-    async syncWallets(webhookUrl) {
+    async syncWallets() {
         try {
             console.log('📡 Syncing wallets with Helius...');
-
-            // Get all monitored wallets from database
-            const wallets = await this.db.all('SELECT wallet_address FROM monitored_wallets');
-            const accountAddresses = wallets.map(w => w.wallet_address);
-
-            console.log(`Found ${accountAddresses.length} wallets to monitor`);
+            
+            // Get all wallet addresses from database
+            const wallets = await new Promise((resolve, reject) => {
+                this.db.all('SELECT wallet_address FROM monitored_wallets', [], (err, rows) => {
+                    if (err) reject(err);
+                    else resolve(rows || []);
+                });
+            });
+            
+            if (!wallets || wallets.length === 0) {
+                console.log('No wallets to sync');
+                return null;
+            }
 
             // First, list all existing webhooks
             console.log('🔍 Checking existing webhooks...');
@@ -81,21 +88,27 @@ class HeliusService {
             }
 
             // Clear any existing webhook records in the database
-            await this.db.run('DELETE FROM helius_webhooks');
+            await new Promise((resolve, reject) => {
+                this.db.run('DELETE FROM helius_webhooks', [], (err) => {
+                    if (err) reject(err);
+                    else resolve();
+                });
+            });
 
             // Only create webhook if we have wallets to monitor
-            if (accountAddresses.length === 0) {
+            if (wallets.length === 0) {
                 console.log('ℹ️ No wallets to monitor, skipping webhook creation');
                 return null;
             }
 
             // Create new webhook
             console.log('🆕 Creating new webhook...');
+            const webhookUrl = this.getWebhookUrl(wallets[0].wallet_address);
             console.log(`Webhook URL: ${webhookUrl}`);
-            console.log(`Account Addresses: ${JSON.stringify(accountAddresses)}`);
+            console.log(`Account Addresses: ${JSON.stringify(wallets.map(w => w.wallet_address))}`);
             
             const response = await this.rateLimitManager.scheduleRequest(
-                () => this.createWebhook(webhookUrl, accountAddresses),
+                () => this.createWebhook(webhookUrl, wallets.map(w => w.wallet_address)),
                 'helius/webhooks/create'
             );
 
@@ -116,19 +129,25 @@ class HeliusService {
 
             if (!webhookDetails.accountAddresses || 
                 !Array.isArray(webhookDetails.accountAddresses) || 
-                webhookDetails.accountAddresses.length !== accountAddresses.length) {
+                webhookDetails.accountAddresses.length !== wallets.length) {
                 throw new Error('Webhook verification failed: Account addresses mismatch');
             }
 
             console.log('✅ Webhook verification successful');
 
             // Store webhook info
-            await this.db.run(
-                'INSERT INTO helius_webhooks (webhook_id, webhook_url, active) VALUES (?, ?, ?)',
-                [webhookId, webhookUrl, 1]
-            );
+            await new Promise((resolve, reject) => {
+                this.db.run(
+                    'INSERT INTO helius_webhooks (webhook_id, webhook_url, active) VALUES (?, ?, ?)',
+                    [webhookId, webhookUrl, 1],
+                    (err) => {
+                        if (err) reject(err);
+                        else resolve();
+                    }
+                );
+            });
 
-            console.log(`✅ Successfully synced ${accountAddresses.length} wallets with Helius`);
+            console.log(`✅ Successfully synced ${wallets.length} wallets with Helius`);
             return webhookId;
         } catch (error) {
             console.error('❌ Failed to sync wallets with Helius:', error);

@@ -278,23 +278,23 @@ class BirdeyeService {
 
         // Take only top 5 tokens
         tokens.slice(0, 5).forEach((token, index) => {
-            const priceChangeEmoji = token.priceChange >= 0 ? '🟢' : '🔴';
-            const priceChangeSymbol = token.priceChange >= 0 ? '+' : '';
+            const priceChangeEmoji = (token.priceChange || 0) >= 0 ? '🟢' : '🔴';
+            const priceChangeSymbol = (token.priceChange || 0) >= 0 ? '+' : '';
             
             embed.fields.push({
-                name: `${index + 1}. ${token.name} (${token.symbol})`,
+                name: `${index + 1}. ${token.name || 'Unknown'} (${token.symbol || 'UNKNOWN'})`,
                 value: [
-                    `💰 Price: $${token.price.toFixed(6)}`,
-                    `${priceChangeEmoji} 24h Change: ${priceChangeSymbol}${token.priceChange.toFixed(2)}%`,
-                    `📊 24h Volume: $${this.formatNumber(token.volume24h)}`,
-                    `💎 Market Cap: $${this.formatNumber(token.marketCap)}`,
-                    `💧 Liquidity: $${this.formatNumber(token.liquidity)}`
+                    `💰 Price: $${this.formatNumber(token.price || token.priceUsd || 0)}`,
+                    `${priceChangeEmoji} 24h Change: ${priceChangeSymbol}${this.formatNumber(token.priceChange || 0)}%`,
+                    `📊 24h Volume: $${this.formatNumber(token.volume24h || 0)}`,
+                    `💎 Market Cap: $${this.formatNumber(token.marketCap || 0)}`,
+                    `💧 Liquidity: $${this.formatNumber(token.liquidity || 0)}`
                 ].join('\n'),
                 inline: false
             });
         });
 
-        if (tokens.length === 0) {
+        if (!tokens || tokens.length === 0) {
             embed.description = 'No trending tokens found at this time.';
         }
 
@@ -566,29 +566,29 @@ ${priceChangeEmoji} 24h Change: ${priceChangeSymbol}${this.formatNumber(priceCha
         const shortAddress = `${address.slice(0, 6)}...${address.slice(-4)}`;
         const addressLink = `[${shortAddress}](https://solscan.io/token/${address})`;
 
-        // Format 24h metrics
-        const volume24h = this.formatNumber(metricsData.volume_24h_usd);
-        const priceChange24h = metricsData.price_change_24h_percent.toFixed(2);
-        const trades24h = this.formatNumber(metricsData.trade_24h);
-        const buys24h = this.formatNumber(metricsData.buy_24h);
-        const sells24h = this.formatNumber(metricsData.sell_24h);
+        // Format 24h metrics with safe defaults
+        const volume24h = this.formatNumber(metricsData.volume_24h_usd || 0);
+        const priceChange24h = (metricsData.price_change_24h_percent || 0).toFixed(2);
+        const trades24h = this.formatNumber(metricsData.trade_24h || 0);
+        const buys24h = this.formatNumber(metricsData.buy_24h || 0);
+        const sells24h = this.formatNumber(metricsData.sell_24h || 0);
 
-        // Format 1h metrics
-        const volume1h = this.formatNumber(metricsData.volume_1h_usd);
-        const priceChange1h = metricsData.price_change_1h_percent.toFixed(2);
-        const trades1h = this.formatNumber(metricsData.trade_1h);
-        const buys1h = this.formatNumber(metricsData.buy_1h);
-        const sells1h = this.formatNumber(metricsData.sell_1h);
+        // Format 1h metrics with safe defaults
+        const volume1h = this.formatNumber(metricsData.volume_1h_usd || 0);
+        const priceChange1h = (metricsData.price_change_1h_percent || 0).toFixed(2);
+        const trades1h = this.formatNumber(metricsData.trade_1h || 0);
+        const buys1h = this.formatNumber(metricsData.buy_1h || 0);
+        const sells1h = this.formatNumber(metricsData.sell_1h || 0);
 
-        // Calculate buy/sell ratios
-        const buyRatio24h = ((buys24h / (buys24h + sells24h)) * 100).toFixed(1);
-        const buyRatio1h = ((buys1h / (buys1h + sells1h)) * 100).toFixed(1);
+        // Calculate buy/sell ratios with safe defaults
+        const buyRatio24h = ((buys24h / Math.max(buys24h + sells24h, 1)) * 100).toFixed(1);
+        const buyRatio1h = ((buys1h / Math.max(buys1h + sells1h, 1)) * 100).toFixed(1);
 
         return {
             title: '📊 Token Metrics Analysis',
             description: [
                 `**Contract:** ${addressLink}`,
-                `**Current Price:** $${this.formatNumber(metricsData.price)}`,
+                `**Current Price:** $${this.formatNumber(metricsData.price || 0)}`,
                 '',
                 '**24h Statistics:**',
                 `💰 Price Change: ${priceChange24h}%`,
@@ -604,10 +604,10 @@ ${priceChangeEmoji} 24h Change: ${priceChangeSymbol}${this.formatNumber(priceCha
                 `📈 Buys: ${buys1h}`,
                 `📉 Sells: ${sells1h}`,
                 '',
-                `👥 Total Holders: ${this.formatNumber(metricsData.holder)}`,
-                `🏦 Markets: ${this.formatNumber(metricsData.market)}`
+                `👥 Total Holders: ${this.formatNumber(metricsData.holder || 0)}`,
+                `🏦 Markets: ${this.formatNumber(metricsData.market || 0)}`
             ].join('\n'),
-            color: priceChange24h >= 0 ? 0x00FF00 : 0xFF0000,
+            color: (metricsData.price_change_24h_percent || 0) >= 0 ? 0x00FF00 : 0xFF0000,
             footer: {
                 text: "built by keklabs",
                 icon_url: "https://media.discordapp.net/attachments/1337565019218378864/1342687517719269489/ddd006d6-fef8-46c4-83eb-5faa63887089.png"
