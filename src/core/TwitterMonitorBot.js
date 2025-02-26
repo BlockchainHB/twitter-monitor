@@ -10,6 +10,7 @@ const DexScreenerService = require('./DexScreenerService');
 const BirdeyeService = require('./BirdeyeService');
 const twilio = require('twilio');
 const HeliusService = require('./HeliusService');
+const { initializeDatabase } = require('../database/init');
 
 class TwitterMonitorBot {
     constructor() {
@@ -51,22 +52,6 @@ class TwitterMonitorBot {
         this.birdeyeService = new BirdeyeService();
         this.dexscreener = new DexScreenerService();
 
-        // Initialize database connection
-        this.db = new sqlite3.Database(config.database.path, 
-            sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE,
-            (err) => {
-                if (err) {
-                    console.error('❌ Database connection error:', err);
-                    throw err;
-                }
-            }
-        );
-
-        // Set up database for better performance
-        this.db.run('PRAGMA journal_mode = WAL');
-        this.db.run('PRAGMA synchronous = NORMAL');
-        this.db.run('PRAGMA foreign_keys = ON');
-        
         // Initialize monitoring state
         this.monitoringInterval = null;
         this.isShuttingDown = false;
@@ -91,12 +76,78 @@ class TwitterMonitorBot {
         this.setupWebhookHandling();
     }
 
-    async setupBot() {
+    async initialize() {
         try {
             console.log('🔄 Setting up bot...');
             
-            // Initialize database
-            await this.initializeDatabase();
+            // Initialize database directory and file first
+            console.log('📊 Initializing database...');
+            const { dbPath, dbFile } = await initializeDatabase();
+            
+            // Close existing connection if any
+            if (this.db) {
+                await new Promise((resolve, reject) => {
+                    this.db.close((err) => {
+                        if (err) reject(err);
+                        else resolve();
+                    });
+                });
+            }
+            
+            // Connect to database with retries
+            console.log(`Connecting to database at: ${dbFile}`);
+            let retries = 3;
+            while (retries > 0) {
+                try {
+                    this.db = await new Promise((resolve, reject) => {
+                        const db = new sqlite3.Database(
+                            dbFile, 
+                            sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE,
+                            (err) => {
+                                if (err) reject(err);
+                                else resolve(db);
+                            }
+                        );
+                    });
+                    console.log('✅ Database connection established');
+                    break;
+                } catch (error) {
+                    retries--;
+                    if (retries === 0) {
+                        console.error('❌ Failed to connect to database after retries:', error);
+                        throw error;
+                    }
+                    console.log(`Retrying database connection... (${retries} attempts left)`);
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                }
+            }
+
+            // Set pragmas for better performance
+            await this.dbRun('PRAGMA journal_mode = WAL');
+            await this.dbRun('PRAGMA synchronous = NORMAL');
+            await this.dbRun('PRAGMA foreign_keys = ON');
+            
+            // Initialize schema
+            const schemaPath = path.join(process.cwd(), 'src', 'database', 'schema.sql');
+            console.log(`Loading schema from: ${schemaPath}`);
+            const schema = await fs.readFile(schemaPath, 'utf8');
+            
+            // Execute schema
+            await this.dbRun('BEGIN TRANSACTION');
+            try {
+                const statements = schema.split(';').filter(stmt => stmt.trim());
+                for (const statement of statements) {
+                    if (statement.trim()) {
+                        await this.dbRun(statement);
+                    }
+                }
+                await this.dbRun('COMMIT');
+                console.log('✅ Schema initialized successfully');
+            } catch (error) {
+                console.error('❌ Error executing schema:', error);
+                await this.dbRun('ROLLBACK');
+                throw error;
+            }
             
             // Set up Discord client
             await this.client.login(this.config.discord.token);
@@ -145,15 +196,32 @@ class TwitterMonitorBot {
             console.log('✅ Bot setup completed successfully');
             
         } catch (error) {
-            console.error('❌ Error during bot setup:', error);
+            console.error('❌ Bot initialization failed:', error);
             throw error;
         }
     }
 
-    async initializeDatabase() {
+    async setupBot() {
         try {
-            console.log('📊 Initializing database...');
+            console.log('🔄 Setting up bot...');
             
+            // Initialize database
+            await this.initializeDatabase();
+            
+            // Set up Discord client
+            await this.client.login(this.config.discord.token);
+            
+            // Get guild and cache channels
+            this.guild = this.client.guilds.cache.get(this.config.discord.guildId);
+            if (!this.guild) {
+                throw new Error('Could not find configured guild');
+            }
+            
+            // Cache channel IDs
+            this.channels = {
+                tweets: this.config.discord.channels.tweets,
+                solana: this.config.discord.channels.solana,
+                vip: this.config.discord.channels.vip,
             // Create data directory if it doesn't exist
             const dataDir = path.dirname(this.config.database.path);
             console.log(`Creating database directory: ${dataDir}`);
