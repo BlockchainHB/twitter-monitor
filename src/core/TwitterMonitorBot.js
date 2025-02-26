@@ -2,8 +2,6 @@ const { TwitterApi } = require('twitter-api-v2');
 const sqlite3 = require('sqlite3');
 const { promisify } = require('util');
 const config = require('../config/config');
-const path = require('path');
-const fs = require('fs').promises;
 const { Client, GatewayIntentBits, ApplicationCommandOptionType } = require('discord.js');
 const RateLimitManager = require('./RateLimitManager');
 const DexScreenerService = require('./DexScreenerService');
@@ -24,13 +22,18 @@ class TwitterMonitorBot {
         this.birdeyeService = dependencies.services.birdeye;
         this.helius = dependencies.services.helius;
         
-        // Initialize state
-        this.state = this.initializeState();
+        // Initialize state with in-memory database
+        this.state = {
+            db: new sqlite3.Database(':memory:', sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE),
+            isMonitoring: false,
+            monitoringInterval: null,
+            isChecking: false
+        };
         
-        // Store provided database if any
-        if (dependencies.db) {
-            this.state.db = dependencies.db;
-        }
+        // Promisify database methods
+        this.dbRun = promisify(this.state.db.run.bind(this.state.db));
+        this.dbAll = promisify(this.state.db.all.bind(this.state.db));
+        this.dbGet = promisify(this.state.db.get.bind(this.state.db));
         
         // Initialize clients
         this.client = new Client({
@@ -60,74 +63,35 @@ class TwitterMonitorBot {
         if (!deps.services.helius) throw new Error('HeliusService required');
     }
 
-    initializeState() {
-        return {
-            isMonitoring: false,
-            monitoringInterval: null,
-            lastCheckTimes: new Map(),
-            db: null,
-            guild: null,
-            channels: null
-        };
-    }
-
     async initialize() {
         try {
             console.log('🚀 Initializing TwitterMonitorBot...');
             
-            // First, ensure database connection is working
-            try {
-                await this.dbRun('SELECT 1');
-                console.log('✅ Database connection successful');
-            } catch (error) {
-                console.error('❌ Database connection failed:', error);
-                throw error;
-            }
-
-            // Create migrations table first
+            // Create basic table for monitored accounts
             await this.dbRun(`
-                CREATE TABLE IF NOT EXISTS migrations (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT UNIQUE NOT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                CREATE TABLE IF NOT EXISTS monitored_accounts (
+                    twitter_id TEXT PRIMARY KEY,
+                    username TEXT NOT NULL,
+                    monitor_type TEXT NOT NULL,
+                    is_vip INTEGER DEFAULT 0,
+                    last_tweet_id TEXT,
+                    profile_data TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             `);
-            
-            // Run migrations before setting WAL mode
-            await this.runMigrations();
-            
-            // Now set WAL mode and other optimizations
-            await this.dbRun('PRAGMA journal_mode = WAL');
-            await this.dbRun('PRAGMA synchronous = NORMAL');
-            await this.dbRun('PRAGMA temp_store = MEMORY');
-            await this.dbRun('PRAGMA busy_timeout = 5000');
 
-            // Verify database is properly set up
-            const accounts = await this.getMonitoredAccounts();
-            console.log(`📊 Found ${accounts.length} monitored accounts`);
+            // Set up command handling
+            this.setupCommandHandling();
 
-            // Initialize Discord client first
-            if (!this.client.isReady()) {
-                await new Promise((resolve, reject) => {
-                    const timeout = setTimeout(() => {
-                        reject(new Error('Discord client connection timed out'));
-                    }, 30000);
-
-                    this.client.once('ready', () => {
-                        clearTimeout(timeout);
-                        resolve();
-                    });
-
-                    this.client.once('error', (error) => {
-                        clearTimeout(timeout);
-                        reject(error);
-                    });
+            // Register commands if client is ready
+            if (this.client.isReady()) {
+                await this.registerCommands();
+            } else {
+                this.client.once('ready', async () => {
+                    await this.registerCommands();
                 });
             }
-
-            // Now set up command handling
-            this.setupCommandHandling();
-            await this.registerCommands();
 
             console.log('✅ Bot initialization complete');
             return true;
@@ -188,7 +152,6 @@ class TwitterMonitorBot {
         }
     }
 
-    // Helper method to promisify db.run
     async dbRun(sql, params = [], maxRetries = 3) {
         let lastError;
         for (let attempt = 0; attempt < maxRetries; attempt++) {

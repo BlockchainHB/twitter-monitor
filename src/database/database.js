@@ -1,73 +1,23 @@
-const path = require('path');
+const sqlite3 = require('sqlite3').verbose();
 
-// SQLite-specific configuration
-const dialectOptions = {
-    foreignKeys: true,
-    mode: process.env.NODE_ENV === 'test' ? 'memory' : null,
-    timeout: 60000,
-    busyTimeout: 60000,
-    // Journal mode
-    journal_mode: 'WAL',
-    // Synchronous setting for better performance
-    synchronous: 'NORMAL',
-    // Cache settings
-    cache: 'shared'
-};
-
-// Pool configuration
-const poolConfig = {
-    max: 5,
-    min: 0,
-    acquire: 30000,
-    idle: 10000
-};
-
-// Get the appropriate storage path
-const getStoragePath = () => {
-    if (process.env.NODE_ENV === 'test') return ':memory:';
-    return process.env.NODE_ENV === 'production' 
-        ? '/app/data/twitter-monitor.db'
-        : path.join(process.cwd(), 'data', 'twitter-monitor.db');
-};
-
-// Database configuration
+// Simple in-memory database configuration
 const config = {
-    development: {
-        dialect: 'sqlite',
-        storage: getStoragePath(),
-        logging: console.log,
-        define: {
-            timestamps: true,
-            underscored: true,
-            paranoid: true
-        },
-        dialectOptions,
-        pool: poolConfig
+    dialect: 'sqlite',
+    storage: ':memory:',
+    logging: process.env.NODE_ENV === 'development' ? console.log : false,
+    define: {
+        timestamps: true,
+        underscored: true
     },
-    test: {
-        dialect: 'sqlite',
-        storage: ':memory:',
-        logging: false,
-        define: {
-            timestamps: true,
-            underscored: true,
-            paranoid: true
-        },
-        dialectOptions,
-        pool: poolConfig
+    dialectOptions: {
+        foreignKeys: true
     },
-    production: {
-        dialect: 'sqlite',
-        storage: getStoragePath(),
-        logging: false,
-        define: {
-            timestamps: true,
-            underscored: true,
-            paranoid: true
-        },
-        dialectOptions,
-        pool: poolConfig
+    pool: {
+        max: 5,
+        min: 0,
+        acquire: 30000,
+        idle: 10000
     }
 };
 
-module.exports = config[process.env.NODE_ENV || 'development'];
+module.exports = config;

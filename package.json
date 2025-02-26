@@ -5,12 +5,12 @@
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
+    "dev": "nodemon src/index.js",
     "test": "jest",
     "test:wallet": "jest src/tests/integration/wallet-tracking.test.js --verbose",
     "test:tweet": "jest src/tests/integration/tweet-monitoring.test.js --verbose",
     "test:watch": "jest --watch",
-    "register": "node src/commands/registerCommands.js",
-    "migrate": "node src/database/runMigrations.js"
+    "register": "node src/commands/registerCommands.js"
   },
   "dependencies": {
     "sqlite3": "^5.1.7",
