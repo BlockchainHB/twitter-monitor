@@ -36,7 +36,8 @@ class TwitterMonitorBot {
                 vip: null,
                 wallets: null
             },
-            guild: null
+            guild: null,
+            trackedWallets: new Map()
         };
         
         // Initialize clients
@@ -1875,8 +1876,8 @@ class TwitterMonitorBot {
         try {
             console.log('🔄 Setting up Helius webhook...');
             
-            // Get all monitored wallets
-            const wallets = await this.dbAll('SELECT wallet_address FROM monitored_wallets');
+            // Get all monitored wallets from state
+            const wallets = Array.from(this.state.trackedWallets?.values() || []);
             const accountAddresses = wallets.map(w => w.wallet_address);
             
             if (accountAddresses.length === 0) {
@@ -1886,31 +1887,33 @@ class TwitterMonitorBot {
 
             // Check for existing webhook
             const webhooks = await this.helius.listWebhooks();
-            let webhook = webhooks.find(w => w.webhookURL === config.helius.webhookUrl);
+            let webhook = webhooks.find(w => w.webhookURL === this.config.helius.webhookUrl);
 
             if (webhook) {
                 // Update existing webhook with current wallet list
                 console.log('📝 Updating existing webhook...');
                 await this.helius.updateWebhook(webhook.webhookId, accountAddresses);
-                await this.dbRun(
-                    'INSERT OR REPLACE INTO helius_webhooks (webhook_id, webhook_url) VALUES (?, ?)',
-                    [webhook.webhookId, config.helius.webhookUrl]
-                );
-                            } else {
+                // Store webhook info in state
+                this.state.heliusWebhook = {
+                    webhookId: webhook.webhookId,
+                    webhookUrl: this.config.helius.webhookUrl
+                };
+            } else {
                 // Create new webhook
                 console.log('🆕 Creating new webhook...');
-                webhook = await this.helius.createWebhook(config.helius.webhookUrl, accountAddresses);
-                await this.dbRun(
-                    'INSERT INTO helius_webhooks (webhook_id, webhook_url) VALUES (?, ?)',
-                    [webhook.webhookId, config.helius.webhookUrl]
-                );
+                webhook = await this.helius.createWebhook(this.config.helius.webhookUrl, accountAddresses);
+                // Store webhook info in state
+                this.state.heliusWebhook = {
+                    webhookId: webhook.webhookId,
+                    webhookUrl: this.config.helius.webhookUrl
+                };
             }
 
             console.log('✅ Helius webhook setup complete');
         } catch (error) {
             console.error('❌ Error setting up Helius webhook:', error);
-                                throw error;
-                            }
+            throw error;
+        }
     }
 
     // Remove the polling-based monitorWallets method since we're using webhooks now
