@@ -44,105 +44,35 @@ const commands = [
         ]
     },
     {
+        name: 'list',
+        description: 'List all monitored accounts and wallets'
+    },
+    {
+        name: 'test',
+        description: 'Test bot functionality and permissions'
+    },
+    {
+        name: 'help',
+        description: 'Show available commands and their usage'
+    },
+    {
         name: 'vipmonitor',
         description: 'Start monitoring a VIP Twitter account',
         options: [
             {
                 name: 'twitter_id',
                 description: 'Twitter username to monitor (without @)',
-                type: 3, // STRING type
-                required: true
-            }
-        ]
-    },
-    {
-        name: 'list',
-        description: 'List all monitored Twitter accounts'
-    },
-    {
-        name: 'test',
-        description: 'Run a test notification'
-    },
-    {
-        name: 'trending',
-        description: 'Show trending Solana memecoin gems (24H)'
-    },
-    {
-        name: 'gainers',
-        description: 'Show top gaining Solana tokens (24H)'
-    },
-    {
-        name: 'holders',
-        description: 'Show holder information for a token',
-        options: [
-            {
-                name: 'address',
-                description: 'Token address',
-                type: 3, // STRING type
-                required: true
-            }
-        ]
-    },
-    {
-        name: 'security',
-        description: 'Show security information for a token',
-        options: [
-            {
-                name: 'address',
-                description: 'Token address',
-                type: 3, // STRING type
-                required: true
-            }
-        ]
-    },
-    {
-        name: 'metrics',
-        description: 'Show detailed metrics for a token',
-        options: [
-            {
-                name: 'address',
-                description: 'Token address',
-                type: 3, // STRING type
-                required: true
-            }
-        ]
-    },
-    {
-        name: 'volume',
-        description: 'Show top volume Solana tokens (24H)'
-    },
-    {
-        name: 'help',
-        description: 'Show all available commands and their usage'
-    },
-    {
-        name: 'smsalert',
-        description: 'Register your phone number for Solana token notifications',
-        options: [
-            {
-                name: 'phone',
-                description: 'Phone number in international format (e.g., +1234567890)',
                 type: 3,
                 required: true
             }
         ]
-    },
-    {
-        name: 'stopsms',
-        description: 'Stop receiving SMS notifications'
     },
     {
         name: 'trackwallet',
-        description: 'Track a Solana wallet',
+        description: 'Track a Solana wallet\'s transactions',
         options: [
             {
-                name: 'name',
-                description: 'Name to identify this wallet',
-                type: 3,
-                required: true
-            },
-            {
-                name: 'wallet',
+                name: 'address',
                 description: 'Solana wallet address to track',
                 type: 3,
                 required: true
@@ -154,12 +84,84 @@ const commands = [
         description: 'Stop tracking a wallet',
         options: [
             {
-                name: 'wallet',
+                name: 'address',
                 description: 'Solana wallet address to stop tracking',
                 type: 3,
                 required: true
             }
         ]
+    },
+    {
+        name: 'trending',
+        description: 'Show trending tokens'
+    },
+    {
+        name: 'gainers',
+        description: 'Show top gainers'
+    },
+    {
+        name: 'losers',
+        description: 'Show top losers'
+    },
+    {
+        name: 'newpairs',
+        description: 'Show new trading pairs'
+    },
+    {
+        name: 'volume',
+        description: 'Show top volume tokens'
+    },
+    {
+        name: 'security',
+        description: 'Show token security information',
+        options: [
+            {
+                name: 'address',
+                description: 'Token address to check',
+                type: 3,
+                required: true
+            }
+        ]
+    },
+    {
+        name: 'metrics',
+        description: 'Show token metrics',
+        options: [
+            {
+                name: 'address',
+                description: 'Token address to check',
+                type: 3,
+                required: true
+            }
+        ]
+    },
+    {
+        name: 'holders',
+        description: 'Show token holders information',
+        options: [
+            {
+                name: 'address',
+                description: 'Token address to check',
+                type: 3,
+                required: true
+            }
+        ]
+    },
+    {
+        name: 'smsalert',
+        description: 'Subscribe to SMS alerts',
+        options: [
+            {
+                name: 'phone',
+                description: 'Phone number (with country code)',
+                type: 3,
+                required: true
+            }
+        ]
+    },
+    {
+        name: 'stopsms',
+        description: 'Unsubscribe from SMS alerts'
     }
 ];
 

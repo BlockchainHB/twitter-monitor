@@ -13,67 +13,54 @@ const HeliusService = require('./HeliusService');
 const { initializeDatabase } = require('../database/init');
 
 class TwitterMonitorBot {
-    constructor() {
-        // Store config
-        this.config = config;
-
-        // Initialize Discord client with required intents
+    constructor(dependencies) {
+        this.validateDependencies(dependencies);
+        
+        // Store dependencies
+        this.rateLimitManager = dependencies.rateLimitManager;
+        this.config = dependencies.config || require('../config/config');
+        
+        // Initialize state
+        this.state = this.initializeState();
+        
+        // Initialize clients
         this.client = new Client({
             intents: [
                 GatewayIntentBits.Guilds,
                 GatewayIntentBits.GuildMessages,
-                GatewayIntentBits.MessageContent,
-                GatewayIntentBits.GuildIntegrations
+                GatewayIntentBits.MessageContent
             ]
         });
 
-        // Add error event handler
-        this.client.on('error', error => {
-            console.error('Discord client error:', error);
-        });
-
-        // Add debug event handler
-        this.client.on('debug', info => {
-            console.log('Discord debug:', info);
-        });
-
-        // Initialize Twitter client
-        this.twitter = new TwitterApi({
-            appKey: config.twitter.apiKey,
-            appSecret: config.twitter.apiKeySecret,
-            accessToken: config.twitter.accessToken,
-            accessSecret: config.twitter.accessTokenSecret
-        });
-
-        // Initialize rate limit manager
-        this.rateLimitManager = new RateLimitManager(config.twitter.rateLimit);
+        this.twitter = new TwitterApi(this.config.twitter.bearerToken);
+        
+        if (this.config.twilio.enabled) {
+            this.twilio = twilio(
+                this.config.twilio.accountSid,
+                this.config.twilio.authToken
+            );
+        }
 
         // Initialize services
-        this.birdeyeService = new BirdeyeService();
-        this.dexscreener = new DexScreenerService();
+        this.dexscreener = new DexScreenerService(this.rateLimitManager);
+        this.birdeye = new BirdeyeService(this.rateLimitManager, this.config.birdeye.apiKey);
+        this.helius = new HeliusService(this.rateLimitManager, this.config);
+    }
 
-        // Initialize monitoring state
-        this.monitoringInterval = null;
-        this.isShuttingDown = false;
+    validateDependencies(deps) {
+        if (!deps.rateLimitManager) throw new Error('RateLimitManager required');
+        if (!deps.config) console.warn('No config provided, using default');
+    }
 
-        // Channel IDs for different alerts
-        this.channels = config.discord.channels;
-
-        // Command processing flags
-        this.processingCommands = new Set();
-
-        // Initialize Twilio client
-        this.twilioClient = twilio(config.twilio.accountSid, config.twilio.authToken);
-
-        // Initialize Helius service
-        this.helius = new HeliusService(config.helius.apiKey, {
-            all: this.dbAll.bind(this),
-            get: this.dbGet.bind(this),
-            run: this.dbRun.bind(this)
-        });
-
-        // Set up webhook handling
-        this.setupWebhookHandling();
+    initializeState() {
+        return {
+            isMonitoring: false,
+            monitoringInterval: null,
+            lastCheckTimes: new Map(),
+            db: null,
+            guild: null,
+            channels: null
+        };
     }
 
     async initialize() {
@@ -85,9 +72,9 @@ class TwitterMonitorBot {
             const { dbPath, dbFile } = await initializeDatabase();
             
             // Close existing connection if any
-            if (this.db) {
+            if (this.state.db) {
                 await new Promise((resolve, reject) => {
-                    this.db.close((err) => {
+                    this.state.db.close((err) => {
                         if (err) reject(err);
                         else resolve();
                     });
@@ -99,7 +86,7 @@ class TwitterMonitorBot {
             let retries = 3;
             while (retries > 0) {
                 try {
-                    this.db = await new Promise((resolve, reject) => {
+                    this.state.db = await new Promise((resolve, reject) => {
                         const db = new sqlite3.Database(
                             dbFile, 
                             sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE,
@@ -153,13 +140,13 @@ class TwitterMonitorBot {
             await this.client.login(this.config.discord.token);
             
             // Get guild and cache channels
-            this.guild = this.client.guilds.cache.get(this.config.discord.guildId);
-            if (!this.guild) {
+            this.state.guild = this.client.guilds.cache.get(this.config.discord.guildId);
+            if (!this.state.guild) {
                 throw new Error('Could not find configured guild');
             }
             
             // Cache channel IDs
-            this.channels = {
+            this.state.channels = {
                 tweets: this.config.discord.channels.tweets,
                 solana: this.config.discord.channels.solana,
                 vip: this.config.discord.channels.vip,
@@ -212,13 +199,13 @@ class TwitterMonitorBot {
             await this.client.login(this.config.discord.token);
             
             // Get guild and cache channels
-            this.guild = this.client.guilds.cache.get(this.config.discord.guildId);
-            if (!this.guild) {
+            this.state.guild = this.client.guilds.cache.get(this.config.discord.guildId);
+            if (!this.state.guild) {
                 throw new Error('Could not find configured guild');
             }
             
             // Cache channel IDs
-            this.channels = {
+            this.state.channels = {
                 tweets: this.config.discord.channels.tweets,
                 solana: this.config.discord.channels.solana,
                 vip: this.config.discord.channels.vip,
@@ -262,9 +249,9 @@ class TwitterMonitorBot {
             }
             
             // Close existing connection if any
-            if (this.db) {
+            if (this.state.db) {
                 await new Promise((resolve, reject) => {
-                    this.db.close((err) => {
+                    this.state.db.close((err) => {
                         if (err) reject(err);
                         else resolve();
                     });
@@ -276,7 +263,7 @@ class TwitterMonitorBot {
             let retries = 3;
             while (retries > 0) {
                 try {
-                    this.db = await new Promise((resolve, reject) => {
+                    this.state.db = await new Promise((resolve, reject) => {
                         const db = new sqlite3.Database(
                             this.config.database.path, 
                             sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE,
@@ -338,7 +325,7 @@ class TwitterMonitorBot {
         for (let attempt = 0; attempt < maxRetries; attempt++) {
             try {
                 return await new Promise((resolve, reject) => {
-                    this.db.run(sql, params, function(err) {
+                    this.state.db.run(sql, params, function(err) {
                         if (err) {
                             reject(err);
                         } else {
@@ -364,7 +351,7 @@ class TwitterMonitorBot {
         for (let attempt = 0; attempt < maxRetries; attempt++) {
             try {
                 return await new Promise((resolve, reject) => {
-                    this.db.get(sql, params, (err, row) => {
+                    this.state.db.get(sql, params, (err, row) => {
                         if (err) {
                             reject(err);
                         } else {
@@ -390,7 +377,7 @@ class TwitterMonitorBot {
         for (let attempt = 0; attempt < maxRetries; attempt++) {
             try {
                 return await new Promise((resolve, reject) => {
-                    this.db.all(sql, params, (err, rows) => {
+                    this.state.db.all(sql, params, (err, rows) => {
                         if (err) {
                             reject(err);
                         } else {
@@ -563,11 +550,11 @@ class TwitterMonitorBot {
     async startMonitoring() {
         console.log('[DEBUG] Starting monitoring interval...');
         
-        if (this.monitoringInterval) {
-            clearInterval(this.monitoringInterval);
+        if (this.state.monitoringInterval) {
+            clearInterval(this.state.monitoringInterval);
         }
 
-        this.monitoringInterval = setInterval(async () => {
+        this.state.monitoringInterval = setInterval(async () => {
             try {
                 console.log('\n[DEBUG] Running monitoring check...');
                 const accounts = await this.getMonitoredAccounts();
@@ -910,8 +897,8 @@ class TwitterMonitorBot {
             );
 
             // Determine which channel to use
-            const channelId = author?.is_vip ? this.channels.vip : this.channels.tweets;
-            const channel = this.guild.channels.cache.get(channelId);
+            const channelId = author?.is_vip ? this.state.channels.vip : this.state.channels.tweets;
+            const channel = this.state.guild.channels.cache.get(channelId);
             if (!channel) {
                 console.error('Channel not found in guild');
                 return;
@@ -1017,7 +1004,7 @@ class TwitterMonitorBot {
 
     async sendSolanaNotification(data) {
         try {
-            const channel = this.guild.channels.cache.get(this.channels.solana);
+            const channel = this.state.guild.channels.cache.get(this.state.channels.solana);
             if (!channel) {
                 console.error('Solana channel not found in guild');
                 return;
@@ -1102,122 +1089,182 @@ class TwitterMonitorBot {
                 const command = interaction.commandName;
                 console.log(`[DEBUG] Received command: ${command} from ${interaction.user.tag}`);
 
+                // Add debug logging for command handling
+                console.log(`[DEBUG] Processing command with options:`, interaction.options?._hoistedOptions);
+
                 switch (command) {
                     case 'monitor':
                         if (!interaction.replied) {
-                            await this.handleMonitorCommand(interaction);
+                            await this.handleMonitorCommand(interaction).catch(err => {
+                                console.error('[ERROR] Monitor command failed:', err);
+                                throw err;
+                            });
                         }
                         break;
                     case 'stopm':
                         if (!interaction.replied) {
-                            await this.handleStopMonitorCommand(interaction);
+                            await this.handleStopMonitorCommand(interaction).catch(err => {
+                                console.error('[ERROR] Stop monitor command failed:', err);
+                                throw err;
+                            });
                         }
                         break;
                     case 'list':
                         if (!interaction.replied) {
-                            await this.handleListCommand(interaction);
+                            await this.handleListCommand(interaction).catch(err => {
+                                console.error('[ERROR] List command failed:', err);
+                                throw err;
+                            });
                         }
                         break;
                     case 'test':
                         if (!interaction.replied) {
-                            await this.testNotifications(interaction);
-                        }
-                        break;
-                    case 'vipmonitor':
-                        if (!interaction.replied) {
-                            await this.handleVipMonitorCommand(interaction);
-                        }
-                        break;
-                    case 'trending':
-                        if (!interaction.replied) {
-                            await this.handleTrendingCommand(interaction);
-                        }
-                        break;
-                    case 'gainers':
-                        if (!interaction.replied) {
-                            await this.handleGainersCommand(interaction);
-                        }
-                        break;
-                    case 'losers':
-                        if (!interaction.replied) {
-                            await this.handleLosersCommand(interaction);
-                        }
-                        break;
-                    case 'newpairs':
-                        if (!interaction.replied) {
-                            await this.handleNewPairsCommand(interaction);
-                        }
-                        break;
-                    case 'volume':
-                        if (!interaction.replied) {
-                            await this.handleVolumeCommand(interaction);
+                            await this.testNotifications(interaction).catch(err => {
+                                console.error('[ERROR] Test command failed:', err);
+                                throw err;
+                            });
                         }
                         break;
                     case 'help':
                         if (!interaction.replied) {
-                            await this.handleHelpCommand(interaction);
+                            await this.handleHelpCommand(interaction).catch(err => {
+                                console.error('[ERROR] Help command failed:', err);
+                                throw err;
+                            });
                         }
                         break;
-                    case 'security':
+                    case 'vipmonitor':
                         if (!interaction.replied) {
-                            await this.handleSecurityCommand(interaction);
-                        }
-                        break;
-                    case 'metrics':
-                        if (!interaction.replied) {
-                            await this.handleMetricsCommand(interaction);
-                        }
-                        break;
-                    case 'holders':
-                        if (!interaction.replied) {
-                            await this.handleHoldersCommand(interaction);
-                        }
-                        break;
-                    case 'smsalert':
-                        if (!interaction.replied) {
-                            await this.handleSMSAlertCommand(interaction);
-                        }
-                        break;
-                    case 'stopsms':
-                        if (!interaction.replied) {
-                            await this.handleStopSMSCommand(interaction);
+                            await this.handleVipMonitorCommand(interaction).catch(err => {
+                                console.error('[ERROR] VIP monitor command failed:', err);
+                                throw err;
+                            });
                         }
                         break;
                     case 'trackwallet':
                         if (!interaction.replied) {
-                            await this.handleTrackWalletCommand(interaction);
+                            await this.handleTrackWalletCommand(interaction).catch(err => {
+                                console.error('[ERROR] Track wallet command failed:', err);
+                                throw err;
+                            });
                         }
                         break;
                     case 'stopwallet':
                         if (!interaction.replied) {
-                            await this.handleStopWalletCommand(interaction);
+                            await this.handleStopWalletCommand(interaction).catch(err => {
+                                console.error('[ERROR] Stop wallet command failed:', err);
+                                throw err;
+                            });
+                        }
+                        break;
+                    case 'trending':
+                        if (!interaction.replied) {
+                            await this.handleTrendingCommand(interaction).catch(err => {
+                                console.error('[ERROR] Trending command failed:', err);
+                                throw err;
+                            });
+                        }
+                        break;
+                    case 'gainers':
+                        if (!interaction.replied) {
+                            await this.handleGainersCommand(interaction).catch(err => {
+                                console.error('[ERROR] Gainers command failed:', err);
+                                throw err;
+                            });
+                        }
+                        break;
+                    case 'losers':
+                        if (!interaction.replied) {
+                            await this.handleLosersCommand(interaction).catch(err => {
+                                console.error('[ERROR] Losers command failed:', err);
+                                throw err;
+                            });
+                        }
+                        break;
+                    case 'newpairs':
+                        if (!interaction.replied) {
+                            await this.handleNewPairsCommand(interaction).catch(err => {
+                                console.error('[ERROR] New pairs command failed:', err);
+                                throw err;
+                            });
+                        }
+                        break;
+                    case 'volume':
+                        if (!interaction.replied) {
+                            await this.handleVolumeCommand(interaction).catch(err => {
+                                console.error('[ERROR] Volume command failed:', err);
+                                throw err;
+                            });
+                        }
+                        break;
+                    case 'security':
+                        if (!interaction.replied) {
+                            await this.handleSecurityCommand(interaction).catch(err => {
+                                console.error('[ERROR] Security command failed:', err);
+                                throw err;
+                            });
+                        }
+                        break;
+                    case 'metrics':
+                        if (!interaction.replied) {
+                            await this.handleMetricsCommand(interaction).catch(err => {
+                                console.error('[ERROR] Metrics command failed:', err);
+                                throw err;
+                            });
+                        }
+                        break;
+                    case 'holders':
+                        if (!interaction.replied) {
+                            await this.handleHoldersCommand(interaction).catch(err => {
+                                console.error('[ERROR] Holders command failed:', err);
+                                throw err;
+                            });
+                        }
+                        break;
+                    case 'smsalert':
+                        if (!interaction.replied) {
+                            await this.handleSMSAlertCommand(interaction).catch(err => {
+                                console.error('[ERROR] SMS alert command failed:', err);
+                                throw err;
+                            });
+                        }
+                        break;
+                    case 'stopsms':
+                        if (!interaction.replied) {
+                            await this.handleStopSMSCommand(interaction).catch(err => {
+                                console.error('[ERROR] Stop SMS command failed:', err);
+                                throw err;
+                            });
                         }
                         break;
                     default:
                         if (!interaction.replied) {
-                            await interaction.reply('Unknown command');
+                            console.log(`[DEBUG] Unknown command received: ${command}`);
+                            await interaction.reply({ 
+                                content: 'Unknown command. Use `/help` to see available commands.',
+                                ephemeral: true 
+                            });
                         }
                 }
             } catch (error) {
-                console.error('Command error:', error);
+                console.error('[ERROR] Command handling error:', error);
+                // If we haven't replied yet, send an error message
                 if (!interaction.replied && !interaction.deferred) {
-                    await interaction.reply({
-                        embeds: [{
-                            title: "Error",
-                            description: "❌ Command failed to execute",
-                            color: 0xFF0000
-                        }]
-                    });
+                    try {
+                        await interaction.reply({
+                            embeds: [{
+                                title: "Error",
+                                description: `❌ Command failed to execute: ${error.message}`,
+                                color: 0xFF0000
+                            }],
+                            ephemeral: true
+                        });
+                    } catch (replyError) {
+                        console.error('[ERROR] Failed to send error reply:', replyError);
+                    }
                 }
             }
         });
-
-        // Basic error handling
-        this.client.on('error', error => {
-            console.error('Discord error:', error);
-        });
-
-        console.log('✅ Command handling setup complete');
     }
 
     async handleMonitorCommand(interaction) {
@@ -1358,7 +1405,7 @@ class TwitterMonitorBot {
                     await this.dbRun('COMMIT');
 
                     // Start monitoring if not already running
-                    if (!this.monitoringInterval) {
+                    if (!this.state.monitoringInterval) {
                         await this.startMonitoring();
                     }
 
@@ -1380,7 +1427,7 @@ class TwitterMonitorBot {
                                 },
                                 {
                                     name: 'Notifications Channel',
-                                    value: `<#${type === 'solana' ? this.channels.solana : this.channels.tweets}>`,
+                                    value: `<#${type === 'solana' ? this.state.channels.solana : this.state.channels.tweets}>`,
                                     inline: true
                                 }
                             ],
@@ -1620,8 +1667,8 @@ class TwitterMonitorBot {
             // 1. Test Discord Permissions
             try {
                 console.log('[DEBUG] Testing Discord permissions...');
-                const tweetsChannel = this.guild.channels.cache.get(this.channels.tweets);
-                const solanaChannel = this.guild.channels.cache.get(this.channels.solana);
+                const tweetsChannel = this.state.guild.channels.cache.get(this.state.channels.tweets);
+                const solanaChannel = this.state.guild.channels.cache.get(this.state.channels.solana);
                 
                 if (!tweetsChannel || !solanaChannel) {
                     throw new Error('Channel not found');
@@ -1865,7 +1912,7 @@ class TwitterMonitorBot {
                 }
 
                 // Start monitoring if not already running
-                if (!this.monitoringInterval) {
+                if (!this.state.monitoringInterval) {
                     await this.startMonitoring();
                 }
 
@@ -1887,7 +1934,7 @@ class TwitterMonitorBot {
                             },
                             {
                                 name: 'Notifications Channel',
-                                value: `<#${this.channels.vip}>`,
+                                value: `<#${this.state.channels.vip}>`,
                                 inline: true
                             }
                         ],
@@ -2028,7 +2075,7 @@ class TwitterMonitorBot {
 
             // Get trending tokens
             console.log('[DEBUG] Fetching trending tokens...');
-            const tokens = await this.birdeyeService.getTrendingTokens();
+            const tokens = await this.birdeye.getTrendingTokens();
             
             if (!tokens || tokens.length === 0) {
                 return await interaction.editReply({
