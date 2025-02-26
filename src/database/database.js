@@ -22,11 +22,19 @@ const poolConfig = {
     idle: 10000
 };
 
+// Get the appropriate storage path
+const getStoragePath = () => {
+    if (process.env.NODE_ENV === 'test') return ':memory:';
+    return process.env.NODE_ENV === 'production' 
+        ? '/app/data/twitter-monitor.db'
+        : path.join(process.cwd(), 'data', 'twitter-monitor.db');
+};
+
 // Database configuration
 const config = {
     development: {
         dialect: 'sqlite',
-        storage: path.join(process.cwd(), 'data', 'twitter-monitor.db'),
+        storage: getStoragePath(),
         logging: console.log,
         define: {
             timestamps: true,
@@ -50,7 +58,7 @@ const config = {
     },
     production: {
         dialect: 'sqlite',
-        storage: path.join(process.cwd(), 'data', 'twitter-monitor.db'),
+        storage: getStoragePath(),
         logging: false,
         define: {
             timestamps: true,
