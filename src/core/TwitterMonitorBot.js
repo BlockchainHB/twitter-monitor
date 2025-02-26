@@ -106,20 +106,37 @@ class TwitterMonitorBot {
             // Create index for username lookups
             await this.dbRun('CREATE INDEX IF NOT EXISTS idx_monitored_accounts_username ON monitored_accounts(username)');
 
+            console.log('📝 Database initialization complete');
+
             // Initialize Discord client with ready event
+            console.log('🔄 Initializing Discord client...');
+            
+            this.client.on('debug', info => console.log('Discord Debug:', info));
+            this.client.on('warn', info => console.log('Discord Warning:', info));
+            this.client.on('error', error => console.error('Discord Error:', error));
+
             await new Promise((resolve, reject) => {
                 const timeout = setTimeout(() => {
                     reject(new Error('Discord client login timed out after 30 seconds'));
                 }, 30000);
 
-                this.client.once('ready', () => {
+                this.client.once('ready', (client) => {
+                    console.log(`🎮 Discord client ready! Logged in as ${client.user.tag}`);
                     clearTimeout(timeout);
                     resolve();
                 });
 
-                this.client.login(this.config.discord.token).catch(reject);
+                console.log('🔄 Attempting Discord login...');
+                this.client.login(this.config.discord.token).catch(error => {
+                    clearTimeout(timeout);
+                    reject(error);
+                });
             });
+
             console.log('✅ Bot logged in successfully');
+
+            // Wait a moment for the client to be fully ready
+            await new Promise(resolve => setTimeout(resolve, 2000));
 
             // Register commands
             console.log('🔄 Registering slash commands...');

@@ -173,14 +173,19 @@ async function registerCommands(client = null) {
             throw new Error('Discord guild ID is required for registering commands');
         }
 
+        console.log(`Using guild ID: ${config.discord.guildId}`);
+        console.log(`Using client ID: ${config.discord.clientId}`);
+
         // Use provided client or create new REST instance
         const rest = client ? client.rest : new REST({ version: '10' }).setToken(config.discord.token);
+        console.log('REST client initialized');
 
         // Add timeout to the registration process
         const timeoutPromise = new Promise((_, reject) => {
             setTimeout(() => reject(new Error('Command registration timed out after 30 seconds')), 30000);
         });
 
+        console.log(`Attempting to register ${commands.length} commands...`);
         const registrationPromise = rest.put(
             Routes.applicationGuildCommands(config.discord.clientId, config.discord.guildId),
             { body: commands }
@@ -192,6 +197,10 @@ async function registerCommands(client = null) {
         console.error('Error registering commands:', error);
         if (error.code === 50001) {
             console.error('Bot lacks permissions to create commands. Please reinvite the bot with proper permissions.');
+        } else if (error.code === 50013) {
+            console.error('Bot lacks permissions in the guild. Please check bot role permissions.');
+        } else if (error.message?.includes('timeout')) {
+            console.error('Command registration timed out. Discord API might be having issues.');
         }
         throw error;
     }
