@@ -4,7 +4,7 @@ const { promisify } = require('util');
 const config = require('../config/config');
 const path = require('path');
 const fs = require('fs').promises;
-const { Client, GatewayIntentBits } = require('discord.js');
+const { Client, GatewayIntentBits, ApplicationCommandOptionType } = require('discord.js');
 const RateLimitManager = require('./RateLimitManager');
 const DexScreenerService = require('./DexScreenerService');
 const BirdeyeService = require('./BirdeyeService');
@@ -89,76 +89,27 @@ class TwitterMonitorBot {
                 )
             `);
 
-            // Create monitored_accounts table
-            await this.dbRun(`
-                CREATE TABLE IF NOT EXISTS monitored_accounts (
-                    twitter_id TEXT PRIMARY KEY,
-                    username TEXT NOT NULL,
-                    monitor_type TEXT NOT NULL,
-                    is_vip INTEGER DEFAULT 0,
-                    last_tweet_id TEXT,
-                    profile_data TEXT,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-            `);
+            // Run migrations
+            await this.runMigrations();
 
-            // Create index for username lookups
-            await this.dbRun('CREATE INDEX IF NOT EXISTS idx_monitored_accounts_username ON monitored_accounts(username)');
-
-            console.log('📝 Database initialization complete');
-
-            // Initialize Discord client with ready event
-            console.log('🔄 Initializing Discord client...');
-            
-            this.client.on('debug', info => console.log('Discord Debug:', info));
-            this.client.on('warn', info => console.log('Discord Warning:', info));
-            this.client.on('error', error => console.error('Discord Error:', error));
-
-            await new Promise((resolve, reject) => {
-                const timeout = setTimeout(() => {
-                    reject(new Error('Discord client login timed out after 30 seconds'));
-                }, 30000);
-
-                this.client.once('ready', (client) => {
-                    console.log(`🎮 Discord client ready! Logged in as ${client.user.tag}`);
-                    clearTimeout(timeout);
-                    resolve();
-                });
-
-                console.log('🔄 Attempting Discord login...');
-                this.client.login(this.config.discord.token).catch(error => {
-                    clearTimeout(timeout);
-                    reject(error);
-                });
-            });
-
-            console.log('✅ Bot logged in successfully');
-
-            // Wait a moment for the client to be fully ready
-            await new Promise(resolve => setTimeout(resolve, 2000));
-
-            // Register commands
-            console.log('🔄 Registering slash commands...');
-            await this.registerCommands();
-            console.log('✅ Commands registered');
-
-            // Setup command handling
-            this.setupCommandHandling();
-            console.log('✅ Command handling setup complete');
-
-            // Start monitoring if there are accounts to monitor
+            // Get monitored accounts
             const accounts = await this.getMonitoredAccounts();
-            if (accounts.length > 0) {
-                await this.startMonitoring();
-                console.log(`✅ Monitoring started for ${accounts.length} accounts`);
+            console.log(`📊 Found ${accounts.length} monitored accounts`);
+
+            // Set up command handling BEFORE registering commands
+            this.setupCommandHandling();
+
+            // Only register commands if we're fully ready
+            if (this.client.isReady()) {
+                await this.registerCommands();
+            } else {
+                // Wait for ready event to register commands
+                this.client.once('ready', async () => {
+                    await this.registerCommands();
+                });
             }
 
-            // Setup Helius webhook if needed
-            await this.setupHeliusWebhook();
-            console.log('✅ Helius webhook setup complete');
-
-            console.log('✅ TwitterMonitorBot initialization complete');
+            return true;
         } catch (error) {
             console.error('❌ Error during initialization:', error);
             throw error;
@@ -222,34 +173,22 @@ class TwitterMonitorBot {
     }
 
     async dbBatchRun(operations, batchSize = 50) {
-        try {
-            // Start transaction
+        if (!operations?.length) return;
+
+        // Process in batches to avoid too many operations at once
+        for (let i = 0; i < operations.length; i += batchSize) {
+            const batch = operations.slice(i, i + batchSize);
             await this.dbRun('BEGIN TRANSACTION');
-
-            // Process operations in batches
-            for (let i = 0; i < operations.length; i += batchSize) {
-                const batch = operations.slice(i, i + batchSize);
-                await Promise.all(batch.map(op => this.dbRun(op.sql, op.params)));
+            try {
+                for (const op of batch) {
+                    await this.dbRun(op.sql, op.params);
+                }
+                await this.dbRun('COMMIT');
+            } catch (error) {
+                await this.dbRun('ROLLBACK');
+                throw error;
             }
-
-            // Commit transaction
-            await this.dbRun('COMMIT');
-        } catch (error) {
-            await this.dbRun('ROLLBACK');
-            throw error;
         }
-    }
-
-    async updateLastCheckTimes(accounts) {
-        if (!accounts?.length) return;
-        
-        const now = Math.floor(Date.now() / 1000); // Store as seconds, not milliseconds
-        const operations = accounts.map(account => ({
-            sql: 'UPDATE monitored_accounts SET last_check_time = ? WHERE twitter_id = ?',
-            params: [now, account.twitter_id]
-        }));
-
-        await this.dbBatchRun(operations);
     }
 
     async batchProcessTweets(tweets, accounts, includes) {
@@ -260,7 +199,7 @@ class TwitterMonitorBot {
 
             // Sort tweets by ID (chronological order, oldest first)
             const sortedTweets = [...tweets].sort((a, b) => {
-                const diff = BigInt(a.id) - BigInt(b.id); // Compare in ascending order
+                const diff = BigInt(a.id) - BigInt(b.id);
                 return diff > 0n ? 1 : diff < 0n ? -1 : 0;
             });
 
@@ -351,7 +290,6 @@ class TwitterMonitorBot {
         if (!tweetsByAuthor) return;
 
         const operations = [];
-        const now = Math.floor(Date.now() / 1000); // Store as seconds, not milliseconds
 
         for (const [authorId, tweets] of Object.entries(tweetsByAuthor)) {
             if (!tweets.length) continue;
@@ -360,8 +298,8 @@ class TwitterMonitorBot {
             const newestTweet = tweets[tweets.length - 1];
             
             operations.push({
-                sql: 'UPDATE monitored_accounts SET last_tweet_id = ?, last_check_time = ? WHERE twitter_id = ?',
-                params: [newestTweet.id, now, authorId]
+                sql: 'UPDATE monitored_accounts SET last_tweet_id = ? WHERE twitter_id = ?',
+                params: [newestTweet.id, authorId]
             });
         }
 
@@ -437,14 +375,6 @@ class TwitterMonitorBot {
                     console.log('[DEBUG] First check for account(s), requesting 10 tweets but will process only 5 most recent');
                 }
 
-                // Update last check time for all accounts
-                await Promise.all(accounts.map(account => 
-                    this.dbRun(
-                        'UPDATE monitored_accounts SET last_check_time = ? WHERE twitter_id = ?',
-                        [Date.now(), account.twitter_id]
-                    )
-                ));
-
                 // Make the API request
                 console.log(`[DEBUG] Making Twitter API request with params:`, params);
                 const response = await this.twitter.v2.search(params);
@@ -455,31 +385,21 @@ class TwitterMonitorBot {
                     dataLength: response.data?.length || 0
                 });
 
-                // Ensure we properly access the tweets data
+                // Process tweets if we have any
                 const tweets = response._realData?.data || response.data || [];
-                console.log(`[DEBUG] Extracted ${tweets.length} tweets from response`);
-
-                // Group tweets by author
-                console.log('[DEBUG] Grouping tweets by author for batch processing...');
-                const tweetsByAuthor = tweets?.length ? tweets.reduce((acc, tweet) => {
-                    if (!acc[tweet.author_id]) {
-                        acc[tweet.author_id] = [];
-                    }
-                    acc[tweet.author_id].push(tweet);
-                    return acc;
-                }, {}) : {};
-
-                console.log('[DEBUG] Tweet distribution by author:');
-                for (const [authorId, authorTweets] of Object.entries(tweetsByAuthor)) {
-                    const account = accounts.find(a => a.twitter_id === authorId);
-                    console.log(`[DEBUG] @${account?.username}: ${authorTweets.length} tweets`);
-                }
-
-                // Only process tweets if we have any
                 if (tweets?.length) {
                     console.log('[DEBUG] Starting batch tweet processing...');
                     await this.batchProcessTweets(tweets, accounts, response.includes);
                     console.log('[DEBUG] Batch tweet processing completed');
+
+                    // Group tweets by author for updating last tweet IDs
+                    const tweetsByAuthor = tweets.reduce((acc, tweet) => {
+                        if (!acc[tweet.author_id]) {
+                            acc[tweet.author_id] = [];
+                        }
+                        acc[tweet.author_id].push(tweet);
+                        return acc;
+                    }, {});
 
                     // Update last tweet IDs in batch
                     console.log('[DEBUG] Updating last tweet IDs in batch...');
@@ -490,11 +410,7 @@ class TwitterMonitorBot {
                 }
 
             } catch (error) {
-                if (error.code === 'RATE_LIMIT') {
-                    console.log('[DEBUG] Rate limit hit, will retry next interval');
-                    return;
-                }
-                console.error('[ERROR] Error processing tweets:', error);
+                console.error('[ERROR] Error in monitoring interval:', error);
             }
         }, config.monitoring.interval);
 
@@ -510,10 +426,8 @@ class TwitterMonitorBot {
                 monitor_type, 
                 last_tweet_id,
                 profile_data,
-                is_vip,
-                last_check_time
-            FROM monitored_accounts
-            ORDER BY last_check_time ASC NULLS FIRST`
+                is_vip
+            FROM monitored_accounts`
         );
     }
 
@@ -1968,8 +1882,17 @@ class TwitterMonitorBot {
     }
 
     async registerCommands() {
+        if (!this.client.application) {
+            console.error('Client application is not ready');
+            return;
+        }
+
         try {
             console.log('🔄 Registering slash commands...');
+            
+            // Get existing commands
+            const existingCommands = await this.client.application.commands.fetch();
+            console.log(`Found ${existingCommands.size} existing commands`);
             
             const commands = [
                 {
@@ -1979,17 +1902,18 @@ class TwitterMonitorBot {
                         {
                             name: 'twitter_id',
                             description: 'Twitter username to monitor',
-                            type: 3,
+                            type: ApplicationCommandOptionType.String,
                             required: true
                         },
                         {
                             name: 'type',
                             description: 'Type of monitoring',
-                            type: 3,
+                            type: ApplicationCommandOptionType.String,
                             required: true,
                             choices: [
                                 { name: 'Tweets', value: 'tweet' },
-                                { name: 'Solana Addresses', value: 'solana' }
+                                { name: 'Solana Addresses', value: 'solana' },
+                                { name: 'VIP (Both)', value: 'vip' }
                             ]
                         }
                     ]
@@ -2001,7 +1925,7 @@ class TwitterMonitorBot {
                         {
                             name: 'twitter_id',
                             description: 'Twitter username to stop monitoring',
-                            type: 3,
+                            type: ApplicationCommandOptionType.String,
                             required: true
                         }
                     ]
@@ -2025,7 +1949,7 @@ class TwitterMonitorBot {
                         {
                             name: 'twitter_id',
                             description: 'Twitter username to monitor as VIP',
-                            type: 3,
+                            type: ApplicationCommandOptionType.String,
                             required: true
                         }
                     ]
@@ -2037,13 +1961,13 @@ class TwitterMonitorBot {
                 {
                     name: 'name',
                     description: 'Name to identify this wallet',
-                    type: 3,
+                    type: ApplicationCommandOptionType.String,
                     required: true
                 },
                 {
                     name: 'wallet',
                     description: 'Solana wallet address to track',
-                    type: 3,
+                    type: ApplicationCommandOptionType.String,
                     required: true
                 }
             ]
@@ -2055,7 +1979,7 @@ class TwitterMonitorBot {
                 {
                     name: 'wallet',
                     description: 'Solana wallet address to stop tracking',
-                    type: 3,
+                    type: ApplicationCommandOptionType.String,
                     required: true
                 }
             ]
@@ -2071,7 +1995,7 @@ class TwitterMonitorBot {
                         {
                             name: 'timeframe',
                             description: 'Timeframe for gains',
-                            type: 3,
+                            type: ApplicationCommandOptionType.String,
                             required: false,
                             choices: [
                                 { name: '1 Hour', value: '1h' },
@@ -2088,7 +2012,7 @@ class TwitterMonitorBot {
                         {
                             name: 'timeframe',
                             description: 'Timeframe for losses',
-                            type: 3,
+                            type: ApplicationCommandOptionType.String,
                             required: false,
                             choices: [
                                 { name: '1 Hour', value: '1h' },
@@ -2105,7 +2029,7 @@ class TwitterMonitorBot {
                         {
                             name: 'hours',
                             description: 'Hours to look back',
-                            type: 4,
+                            type: ApplicationCommandOptionType.Integer,
                             required: false
                         }
                     ]
@@ -2117,7 +2041,7 @@ class TwitterMonitorBot {
                         {
                             name: 'timeframe',
                             description: 'Timeframe for volume',
-                            type: 3,
+                            type: ApplicationCommandOptionType.String,
                             required: false,
                             choices: [
                                 { name: '1 Hour', value: '1h' },
@@ -2134,7 +2058,7 @@ class TwitterMonitorBot {
                         {
                             name: 'address',
                             description: 'Token address to analyze',
-                            type: 3,
+                            type: ApplicationCommandOptionType.String,
                             required: true
                         }
                     ]
@@ -2146,7 +2070,7 @@ class TwitterMonitorBot {
                         {
                             name: 'address',
                             description: 'Token address to analyze',
-                            type: 3,
+                            type: ApplicationCommandOptionType.String,
                             required: true
                         }
                     ]
@@ -2158,7 +2082,7 @@ class TwitterMonitorBot {
                         {
                             name: 'address',
                             description: 'Token address to analyze',
-                            type: 3,
+                            type: ApplicationCommandOptionType.String,
                             required: true
                         }
                     ]
@@ -2170,7 +2094,7 @@ class TwitterMonitorBot {
                         {
                             name: 'phone',
                             description: 'Phone number (international format)',
-                            type: 3,
+                            type: ApplicationCommandOptionType.String,
                             required: true
                         }
                     ]
@@ -2181,12 +2105,24 @@ class TwitterMonitorBot {
                 }
             ];
 
-            // Register all commands in bulk
-            await this.client.application?.commands.set(commands);
+            // Compare existing commands with new ones
+            const needsUpdate = commands.length !== existingCommands.size || 
+                commands.some(cmd => {
+                    const existing = existingCommands.find(e => e.name === cmd.name);
+                    return !existing || 
+                           existing.description !== cmd.description ||
+                           JSON.stringify(existing.options) !== JSON.stringify(cmd.options);
+                });
 
-            console.log('✅ Slash commands registered successfully');
+            if (needsUpdate) {
+                console.log('Commands need updating, applying changes...');
+                await this.client.application.commands.set(commands);
+                console.log('✅ Commands updated successfully');
+            } else {
+                console.log('✅ Commands are up to date, no changes needed');
+            }
         } catch (error) {
-            console.error('❌ Error registering commands:', error);
+            console.error('Error registering commands:', error);
             throw error;
         }
     }
