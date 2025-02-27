@@ -53,7 +53,7 @@ class TwitterMonitorBot {
     async start() {
         try {
             console.log('Starting Twitter Monitor Bot...');
-            
+
             // Login to Discord
             await this.client.login(this.config.discordToken);
             console.log('✅ Logged into Discord');
@@ -106,7 +106,7 @@ class TwitterMonitorBot {
             await this.heliusService.loadWalletsFromJson();
             
             console.log('🔄 Logging into Discord...');
-            await this.client.login(process.env.DISCORD_TOKEN);
+            await this.client.login(process.env.DISCORD_BOT_TOKEN);
             
             console.log('🔄 Starting initialization process...');
             
@@ -1822,7 +1822,7 @@ class TwitterMonitorBot {
             this.heliusService.setWalletName(address, name || address.slice(0, 4) + '...' + address.slice(-4));
 
             await interaction.reply(`✅ Now tracking wallet: ${name || address}`);
-        } catch (error) {
+            } catch (error) {
             console.error('Error handling track wallet command:', error);
             await interaction.reply('Failed to track wallet.');
         }
@@ -2112,7 +2112,7 @@ class TwitterMonitorBot {
 
                 await this.twitterRateLimitManager.scheduleRequest(
                     async () => {
-                        const params = {
+                const params = {
                             ...this.searchConfig,
                             since_id: lastTweetId
                         };
@@ -2131,10 +2131,10 @@ class TwitterMonitorBot {
                 this.lastSearchTime.set(account.id, now);
             }
         } catch (error) {
-            if (error.code === 'RATE_LIMIT') {
+                if (error.code === 'RATE_LIMIT') {
                 console.log('Rate limit hit, will retry on next interval');
-                return;
-            }
+                    return;
+                }
             console.error('Error processing tweets batch:', error);
             throw error; // Propagate error to be handled by the monitoring loop
         }
