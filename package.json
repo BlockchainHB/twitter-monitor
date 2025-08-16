@@ -1,16 +1,40 @@
 {
-  "name": "kek-monitor",
+  "name": "twitter-solana-monitor",
   "version": "1.0.0",
-  "private": true,
+  "description": "A Discord bot that monitors Twitter accounts for Solana token mentions and tracks wallet transactions",
+  "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
-    "build": "npm install --omit=dev"
+    "dev": "NODE_ENV=development node src/index.js",
+    "test": "NODE_ENV=test jest",
+    "build": "npm install --omit=dev",
+    "configure-webhook": "node src/scripts/configure-webhook.js"
+  },
+  "keywords": [
+    "discord",
+    "bot",
+    "twitter",
+    "solana",
+    "cryptocurrency",
+    "monitoring",
+    "blockchain"
+  ],
+  "author": "BlockchainHB",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/BlockchainHB/twitter-solana-monitor"
   },
   "dependencies": {
     "discord.js": "^14.14.1",
     "dotenv": "^16.4.1",
     "node-fetch": "^2.7.0",
-    "twilio": "^4.20.1"
+    "twilio": "^4.20.1",
+    "twitter-api-v2": "^1.15.0",
+    "axios": "^1.6.0"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0"
   },
   "engines": {
     "node": ">=18.0.0"

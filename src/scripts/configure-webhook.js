@@ -16,9 +16,9 @@ class WebhookConfigurator {
     constructor() {
         console.log('\n🚀 Starting webhook configuration...');
         
-        // Load config directly to avoid env issues
-        this.apiKey = '616882e3-f3c1-47bc-b57f-0858c6bef448';
-        this.webhookUrl = 'https://heliusrailways-production.up.railway.app/api/wallet-webhook';
+        // Load config from environment variables
+        this.apiKey = process.env.HELIUS_API_KEY;
+        this.webhookUrl = process.env.HELIUS_WEBHOOK_URL;
         this.baseUrl = 'https://api.helius.xyz/v0';
         this.walletsPath = path.join(__dirname, '../config/wallets.json');
 
